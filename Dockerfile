@@ -9,6 +9,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Ho_Chi_Minh
 # Cài đặt các thư viện hệ thống cần thiết cho OpenCV và hiển thị
 RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-dev \
+    build-essential \
     libgl1-mesa-glx \
     libglib2.0-0 \
     pkg-config \
