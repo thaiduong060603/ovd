@@ -1,6 +1,6 @@
 # Sử dụng base image tối ưu cho Jetson Orin (L4T)
 # Lưu ý: Chọn version phù hợp với JetPack trên máy bạn (ví dụ: r35.x.x)
-FROM nvcr.io/nvidia/l4t-base:r36.4.0
+FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
 
 # Thiết lập thư mục làm việc
 WORKDIR /app
