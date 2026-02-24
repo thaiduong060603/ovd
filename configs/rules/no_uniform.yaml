@@ -1,0 +1,43 @@
+# Example rule: Alert when person without uniform enters area
+rule_id: "no_uniform_area_entrance"
+area_id: "entrance_zone_1"
+description: "Detect person not wearing uniform in restricted entrance area"
+
+# Detection configuration
+detection:
+  prompt_positive: "person,helmet"
+  prompt_negative: null  # Optional: "person wearing uniform"
+  box_threshold: 0.35
+  text_threshold: 0.25
+
+# Incident trigger conditions
+conditions:
+  dwell_seconds: 2.0        # Must be present for 2 seconds continuously
+  min_confidence: 0.5       # Minimum detection confidence
+  min_frames: 3             # Must be detected in at least 3 frames
+  require_helmetless: true
+
+# ROI (Region of Interest) - optional
+roi:
+  enabled: true
+  type: "polygon"
+  points: 
+    - [100, 100]
+    - [500, 100]
+    - [500, 800]
+    - [100, 800]
+
+# Actions when incident confirmed
+actions:
+  cooldown_seconds: 60      # Don't re-alert for same track within 60s
+  record_pre_seconds: 10    # Record 10s before incident
+  record_post_seconds: 10   # Record 10s after incident
+  notify_channels:
+    - "slack"
+    - "email"
+
+# Metadata
+metadata:
+  priority: "high"
+  created_by: "admin"
+  created_at: "2025-01-25"

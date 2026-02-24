@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OVD Rule DSL Schema",
+  "description": "Structured deterministic rule for OVD monitoring system (helmetless, zone intrusion, etc.)",
+  "type": "object",
+  "required": [
+    "rule_id",
+    "description",
+    "method",
+    "detection",
+    "conditions",
+    "actions"
+  ],
+  "properties": {
+    "rule_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 100,
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "description": "Unique identifier for the rule"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 500,
+      "description": "Human-readable description of the rule"
+    },
+    "method": {
+      "enum": ["direct", "composite"],
+      "description": "Detection method: 'direct' (prompt trực tiếp) or 'composite' (suy luận từ nhiều detection)"
+    },
+    "detection": {
+      "type": "object",
+      "required": ["prompt_positive", "box_threshold", "text_threshold"],
+      "properties": {
+        "prompt_positive": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Positive prompt for GroundingDINO (e.g. 'person . helmet . hard hat')"
+        },
+        "prompt_negative": {
+          "type": ["string", "null"],
+          "description": "Negative prompt (optional)"
+        },
+        "box_threshold": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Box confidence threshold"
+        },
+        "text_threshold": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Text embedding similarity threshold"
+        }
+      },
+      "additionalProperties": false
+    },
+    "conditions": {
+      "type": "object",
+      "properties": {
+        "dwell_seconds": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 300,
+          "description": "Minimum continuous duration (seconds) to confirm incident"
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 1.0,
+          "description": "Minimum detection confidence"
+        },
+        "min_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum number of frames matching condition"
+        },
+        "require_helmetless": {
+          "type": "boolean",
+          "description": "Require the person to be helmetless (for composite method)"
+        },
+        "inside_roi": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": ["polygon", "rectangle"],
+              "description": "ROI shape type"
+            },
+            "points": {
+              "type": "array",
+              "description": "Coordinates: polygon (>=3 points), rectangle (2 points: top-left, bottom-right)",
+              "items": {
+                "type": "array",
+                "items": { "type": "number" },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "minItems": 3
+            }
+          },
+          "required": ["enabled"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "actions": {
+      "type": "object",
+      "required": ["cooldown_seconds", "notify_channels"],
+      "properties": {
+        "cooldown_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum seconds between notifications for same incident"
+        },
+        "record_pre_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds of video to record before incident"
+        },
+        "record_post_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds of video to record after incident"
+        },
+        "notify_channels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["console", "email", "slack", "mqtt"]
+          },
+          "description": "Channels to send notifications"
+        }
+      },
+      "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional metadata (priority, created_by, etc.)"
+    }
+  },
+  "additionalProperties": false
+}

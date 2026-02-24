@@ -1,0 +1,12 @@
+# Slack notification configuration
+enabled: false  # Set to true when you have webhook URL
+webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+channel: "#security-alerts"
+username: "OVD Watchdog"
+icon_emoji: ":rotating_light:"
+rate_limit_seconds: 60
+
+# Optional: Mention users on high-confidence alerts
+mention_users:
+  high_confidence: "@security-team"
+  critical: "@everyone"

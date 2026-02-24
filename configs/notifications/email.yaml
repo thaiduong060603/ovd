@@ -1,0 +1,10 @@
+# Email notification configuration
+enabled: true  # Set to true when configured
+smtp_server: "smtp.gmail.com"
+smtp_port: 587
+username: "vinhtran22112003@gmail.com"
+password: "ncys tbxa objj ojjl"  # For Gmail, use App Password
+from_email: "vinhtran22112003@gmail.com"
+to_emails:
+  - "nanofactorydrive@gmail.com"
+rate_limit_seconds: 120

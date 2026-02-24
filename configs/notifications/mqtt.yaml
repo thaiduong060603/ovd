@@ -1,0 +1,10 @@
+# MQTT notification configuration (for IoT integration)
+enabled: false
+broker: "mqtt.eclipse.org"
+port: 1883
+topic: "ovd/security/alerts"
+username: null  # Optional
+password: null  # Optional
+qos: 1
+retain: false
+rate_limit_seconds: 30

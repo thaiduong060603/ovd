@@ -1,0 +1,5 @@
+# Console notification (always enabled for testing)
+enabled: true
+rate_limit_seconds: 0  # No rate limit for console
+verbose: true
+color_output: true
