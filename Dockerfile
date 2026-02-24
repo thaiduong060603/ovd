@@ -5,6 +5,8 @@ FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
 # Thiết lập thư mục làm việc
 WORKDIR /app
 
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Ho_Chi_Minh
 # Cài đặt các thư viện hệ thống cần thiết cho OpenCV và hiển thị
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
