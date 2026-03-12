@@ -1,0 +1,67 @@
+# ── Rule: DWELL INSIDE ZONE ──────────────────────────────────────────────────
+# Trigger when a person stays inside a danger zone for longer than N seconds.
+# Uses inside_polygon + dwell_time_over operators:
+#   - Person must be continuously inside the zone
+#   - AND must stay for at least dwell_seconds
+#   - Timer resets if person leaves the zone
+#
+# Difference from polygon_intrusion:
+#   - intrusion  → fires ONCE when person first crosses boundary
+#   - dwell      → fires after person has been INSIDE for X seconds continuously
+
+rule_id: "dwell_in_zone"
+area_id: "danger_zone_01"
+description: "Detect person dwelling inside danger zone for more than 5 seconds"
+
+detection:
+  prompt_positive: "person . worker . human ."
+  prompt_negative: null
+  box_threshold: 0.30
+  text_threshold: 0.25
+
+conditions:
+  dwell_seconds: 5.0         # Alert after 5 continuous seconds inside zone
+  min_confidence: 0.45
+  min_frames: 5
+  require_helmetless: false
+  use_entered_polygon: false  # Use inside_polygon (continuous), not entered_polygon
+
+  # ── ROI polygon ────────────────────────────────────────────────────────────
+  # Sample danger zone — REPLACE with actual coordinates.
+  # Tip: make this zone tighter than intrusion zone for precision.
+  inside_roi:
+    enabled: true
+    type: "polygon"
+    points:
+      - [500, 300]
+      - [1100, 300]
+      - [1100, 750]
+      - [500, 750]
+
+roi:
+  enabled: true
+  type: "polygon"
+  points:
+    - [500, 300]
+    - [1100, 300]
+    - [1100, 750]
+    - [500, 750]
+
+actions:
+  cooldown_seconds: 60       # Re-alert every 60s while person stays
+  record_pre_seconds: 8      # Capture 8s before dwell confirmed
+  record_post_seconds: 10
+  notify_channels:
+    - "slack"
+    - "email"
+
+metadata:
+  priority: "high"
+  pattern: "dwell_in_zone"
+  operator: "inside_polygon + dwell_time_over"
+  created_by: "ThaiDuong"
+  created_at: "2026-03-11"
+  note: >
+    dwell_seconds controls how long person must stay before alert fires.
+    Timer resets automatically if person exits and re-enters the zone.
+    Replace roi.points with actual danger zone coordinates.

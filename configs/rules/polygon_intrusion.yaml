@@ -1,0 +1,72 @@
+# ── Rule: POLYGON INTRUSION ──────────────────────────────────────────────────
+# Trigger when a person ENTERS a restricted polygon zone.
+# Uses entered_polygon operator: fires exactly once per entry event
+# (outside → inside transition), not continuously while inside.
+#
+# How to update ROI:
+#   1. Open your video in any image viewer or run:
+#      python tools/pick_roi.py --input your_video.mp4
+#   2. Click the corners of your restricted zone
+#   3. Replace the points below with the output coordinates
+
+rule_id: "polygon_intrusion"
+area_id: "restricted_zone_01"
+description: "Detect person entering restricted polygon area"
+
+detection:
+  # Detect any person — ROI does the spatial filtering
+  prompt_positive: "person . worker . human ."
+  prompt_negative: null
+  box_threshold: 0.30
+  text_threshold: 0.25
+
+conditions:
+  dwell_seconds: 0.5        # Fire quickly — intrusion should alert fast
+  min_confidence: 0.45
+  min_frames: 2             # Low threshold — we want fast response
+  require_helmetless: false
+  use_entered_polygon: false  # Use entered_polygon operator (one-shot on entry)
+
+  # ── ROI polygon ────────────────────────────────────────────────────────────
+  # Sample coordinates for a 1920x1080 video — REPLACE with actual zone.
+  # Points must be ordered clockwise or counter-clockwise.
+  inside_roi:
+    enabled: true
+    type: "polygon"
+    points:
+      - [176, 320]
+      - [528, 320]
+      - [528, 960]
+      - [176, 960]
+      # - [0, 0]
+      # - [704, 0]
+      # - [704, 1280]
+      # - [0, 1280]      
+
+roi:
+  enabled: true
+  type: "polygon"
+  points:
+      - [176, 320]
+      - [528, 320]
+      - [528, 960]
+      - [176, 960]
+    # - [0, 0]
+    # - [704, 0]
+    # - [704, 1280]
+    # - [0, 1280]    
+
+actions:
+  cooldown_seconds: 5       # Re-alert after 30s if same person enters again
+  record_pre_seconds: 3
+  record_post_seconds: 10
+  notify_channels:
+    - "slack"
+
+metadata:
+  priority: "high"
+  pattern: "polygon_intrusion"
+  operator: "entered_polygon"
+  created_by: "ThaiDuong"
+  created_at: "2026-03-11"
+  note: "Replace roi.points with actual zone coordinates from your video"

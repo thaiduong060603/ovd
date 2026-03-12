@@ -1,0 +1,71 @@
+# ── Rule: DANGEROUS PROXIMITY (Person + Forklift) ────────────────────────────
+# Trigger when a person is within dangerous distance of a forklift.
+# Uses near_object operator: calculates pixel distance between bbox centers
+# of a person track and any forklift track in the same frame.
+#
+# IMPORTANT — How near_distance_px works:
+#   Distance is measured in pixels between bbox CENTERS.
+#   This is resolution-dependent. For a 1920x1080 video:
+#     ~150px ≈ roughly 1.5-2m depending on camera angle/distance
+#     ~300px ≈ roughly 3-4m
+#   Calibrate near_distance_px based on your actual camera setup.
+#
+# Prompt strategy:
+#   Both "person" and "forklift" must be detected simultaneously.
+#   The near_object operator then checks if any person track is
+#   within near_distance_px of any forklift track.
+
+rule_id: "dangerous_proximity"
+area_id: "factory_floor_01"
+description: "Detect person in dangerous proximity to forklift"
+
+detection:
+  # Detect BOTH person and forklift in the same prompt call
+  prompt_positive: "person . worker . forklift . forklift truck ."
+  prompt_negative: null
+  box_threshold: 0.28        # Slightly lower — forklifts can be partially occluded
+  text_threshold: 0.22
+
+conditions:
+  dwell_seconds: 1.0         # Alert after 1s of proximity — fast response needed
+  min_confidence: 0.40
+  min_frames: 3
+  require_helmetless: false
+  use_entered_polygon: false
+
+  # ── Proximity settings ─────────────────────────────────────────────────────
+  near_class: "forklift"     # Check proximity against tracks with this class name
+  near_distance_px: 200      # Alert if person center is within 200px of forklift center
+                              # CALIBRATE this based on your camera resolution + mounting height
+
+  # No ROI needed — detect proximity anywhere in frame
+  inside_roi:
+    enabled: false
+    type: "polygon"
+    points: []
+
+roi:
+  enabled: false
+  type: "polygon"
+  points: []
+
+actions:
+  cooldown_seconds: 15       # Re-alert frequently — proximity is high urgency
+  record_pre_seconds: 5
+  record_post_seconds: 8
+  notify_channels:
+    - "slack"
+
+metadata:
+  priority: "critical"
+  pattern: "dangerous_proximity"
+  operator: "near_object"
+  near_class: "forklift"
+  near_distance_px: 200
+  created_by: "ThaiDuong"
+  created_at: "2026-03-11"
+  note: >
+    near_distance_px is in pixel units and depends on camera resolution
+    and mounting position. Calibrate by measuring known distances in
+    your video. Start with 200px and adjust based on test results.
+    Both person and forklift must be in the same camera frame.

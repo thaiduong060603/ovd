@@ -1,3 +1,7 @@
 data/
 *.pth
 .env
+models/
+stuff/
+stuffs/
+video/
