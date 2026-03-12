@@ -1,6 +1,8 @@
 # Sử dụng base image tối ưu cho Jetson Orin (L4T)
 # Lưu ý: Chọn version phù hợp với JetPack trên máy bạn (ví dụ: r35.x.x)
-FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
+# FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0
+FROM nvcr.io/nvidia/l4t-pytorch:r36.2.0-pth2.2-py3
+
 
 # Thiết lập thư mục làm việc
 WORKDIR /app
@@ -21,7 +23,7 @@ RUN apt-get update && apt-get install -y \
 # Copy file requirements và cài đặt (nếu có)
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
-RUN pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# RUN pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 # Copy toàn bộ code vào container
 COPY . .
