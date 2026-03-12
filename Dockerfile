@@ -25,7 +25,3 @@ RUN pip3 install torch torchvision --index-url https://download.pytorch.org/whl/
 
 # Copy toàn bộ code vào container
 COPY . .
-
-# Lệnh mặc định khi container khởi chạy
-# (Chúng ta sẽ ghi đè lệnh này khi chạy docker run)
-CMD ["python3", "main.py"]
