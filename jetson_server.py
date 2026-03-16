@@ -177,7 +177,6 @@ async def upload_video(file: UploadFile = File(...)):
     """
     if session.state == SessionState.RUNNING:
         raise HTTPException(400, "Pipeline is running. Stop first.")
-
     # Save to temp directory
     tmp_dir = Path(tempfile.gettempdir()) / "ovd_uploads"
     tmp_dir.mkdir(exist_ok=True)
@@ -185,6 +184,8 @@ async def upload_video(file: UploadFile = File(...)):
 
     with open(save_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    session.input_path = str(save_path)
 
     file_size_mb = save_path.stat().st_size / 1024**2
     print(f"[UPLOAD] Received: {file.filename}  ({file_size_mb:.1f} MB) → {save_path}")
@@ -201,7 +202,7 @@ async def upload_video(file: UploadFile = File(...)):
 def start_session(req: StartRequest):
     if session.state == SessionState.RUNNING:
         raise HTTPException(400, "Session already running. Stop first.")
-
+    
     # ── Validate source ───────────────────────────────────────────────────────
     if req.source_type == SourceType.JETSON_FILE:
         if not req.jetson_file_path:
