@@ -73,6 +73,7 @@ class Session:
         self.det_interval: int  = 5
         self.stream_width: int  = 640
         self.jpeg_quality: int  = 75
+        self.stream_skip: int = 2
 
         # Pipeline internals
         self.stop_event    = threading.Event()
@@ -355,29 +356,25 @@ async def stream_endpoint(ws: WebSocket):
     async def send_results():
         try:
             while True:
-                # Send annotated frame
+                # 1. Gửi frame dưới dạng BINARY
                 try:
                     jpeg_bytes, meta = session.frame_queue.get_nowait()
-                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                    await ws.send_text(json.dumps({
-                        "type":    "frame",
-                        "payload": {"image": b64, "meta": meta}
-                    }))
+                    meta_bytes = json.dumps(meta).encode("utf-8")
+                    # Định dạng: FRAME + JPEG + __META__ + JSON
+                    packet = b"FRAME" + jpeg_bytes + b"__META__" + meta_bytes
+                    await ws.send_bytes(packet)
                 except queue.Empty:
                     pass
 
-                # Send events
+                # 2. Gửi events (vẫn giữ JSON vì ít)
                 try:
                     while True:
                         evt = session.event_queue.get_nowait()
-                        await ws.send_text(json.dumps({
-                            "type":    "event",
-                            "payload": evt
-                        }))
+                        await ws.send_text(json.dumps({"type": "event", "payload": evt}))
                 except queue.Empty:
                     pass
 
-                await asyncio.sleep(0.016)   # ~60fps push cadence
+                await asyncio.sleep(0.008)   # tăng tốc push lên ~120fps
         except Exception:
             pass
 
@@ -527,15 +524,19 @@ def _pipeline_worker():
             session.total_events = len(engine.events)
 
             # ── Annotate + encode frame ────────────────────────────────────────
-            vis = _annotate(frame, tracks, engine, rule,
-                            session.frame_id, current_fps)
+            ### Dont need to draw annotations
+            # vis = _annotate(frame, tracks, engine, rule,
+            #                 session.frame_id, current_fps)
 
-            if session.stream_width > 0:
-                h, w  = vis.shape[:2]
-                scale = session.stream_width / w
-                vis   = cv2.resize(vis, (session.stream_width, int(h * scale)))
-
-            _, jpeg_buf = cv2.imencode(".jpg", vis, encode_params)
+            # if session.stream_width > 0:
+            #     h, w  = vis.shape[:2]
+            #     scale = session.stream_width / w
+            #     vis   = cv2.resize(vis, (session.stream_width, int(h * scale)))
+            # if session.frame_id % getattr(session, "stream_skip", 2) != 0:
+            #     continue
+            # _, jpeg_buf = cv2.imencode(".jpg", vis, encode_params)
+            _, jpeg_buf = cv2.imencode(".jpg", frame, encode_params)
+            incident_track_ids = {i.track_id for i in engine.get_confirmed_incidents()}
 
             meta = {
                 "frame_id":  session.frame_id,
@@ -544,7 +545,19 @@ def _pipeline_worker():
                 "tracks":    session.tracks,
                 "incidents": session.incidents,
                 "events":    session.total_events,
+                "tracks_data": [
+                    {
+                        "track_id": t.track_id,
+                        "bbox": list(map(int, t.bbox)),
+                        "class_name": t.class_name,
+                        "confidence": float(t.confidence),
+                        "is_incident": t.track_id in incident_track_ids
+                    } for t in tracks
+                ],
+                "roi_points": rule.roi.points if rule.roi and rule.roi.enabled else []
             }
+            if session.frame_id % getattr(session, "stream_skip", 2) != 0:
+                continue            
 
             # Drop oldest frame if queue full (client too slow)
             if session.frame_queue.full():

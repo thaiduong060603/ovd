@@ -189,8 +189,26 @@ class LiveDisplay(threading.Thread):
 
         cv2.destroyAllWindows()
 
-    def _overlay(self, frame, meta):
+    # Add draw annotations when receive frames from jetson
+    def _draw_annotations(self, frame, meta):
         vis = frame.copy()
+        # Vẽ tracks
+        for t in meta.get("tracks_data", []):
+            x1,y1,x2,y2 = t["bbox"]
+            color = (0,60,255) if t["is_incident"] else (0,200,255)
+            cv2.rectangle(vis, (x1,y1), (x2,y2), color, 3)
+            cv2.putText(vis, f"#{t['track_id']} {t['class_name'][:8]}", (x1, y1-8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        # Vẽ ROI
+        if meta.get("roi_points"):
+            pts = np.array(meta["roi_points"], np.int32)
+            cv2.polylines(vis, [pts], True, (0,200,255), 2)
+        
+        return vis
+    def _overlay(self, frame, meta):
+        # vis = frame.copy()
+        vis = self._draw_annotations(frame, meta)
         h, w = vis.shape[:2]
         # Green dot = connected
         cv2.circle(vis, (w - 18, 18), 8, (0, 230, 80), -1)
@@ -269,7 +287,7 @@ async def stream_camera(ws_url: str, cam_index: int,
                     if stop_flag.is_set():
                         break
                     if isinstance(raw, str):
-                        _handle_text_msg(raw, frame_q, event_q)
+                        _handle_message(raw, frame_q, event_q)
 
             await asyncio.gather(send_frames(), recv_results())
 
@@ -300,7 +318,7 @@ async def receive_stream(ws_url: str, frame_q: queue.Queue,
                     if stop_flag.is_set():
                         break
                     if isinstance(raw, str):
-                        done = _handle_text_msg(raw, frame_q, event_q)
+                        done = _handle_message(raw, frame_q, event_q)
                         if done:
                             stop_flag.set()
                             break
@@ -316,40 +334,31 @@ async def receive_stream(ws_url: str, frame_q: queue.Queue,
             reconnect_delay = min(reconnect_delay * 1.5, 15.0)
 
 
-def _handle_text_msg(raw: str, frame_q: queue.Queue, event_q: queue.Queue) -> bool:
-    """Returns True if server signaled pipeline ended."""
-    try:
-        msg = json.loads(raw)
-        t   = msg.get("type")
-        p   = msg.get("payload", {})
+def _handle_message(raw, frame_q: queue.Queue, event_q: queue.Queue):
+    """Xử lý cả text và binary"""
+    if isinstance(raw, bytes):
+        if raw.startswith(b"FRAME"):
+            idx = raw.find(b"__META__")
+            jpeg_bytes = raw[5:idx]
+            meta_bytes = raw[idx + 8:]
+            meta = json.loads(meta_bytes.decode("utf-8"))
 
-        if t == "frame":
-            jpeg_bytes = base64.b64decode(p["image"])
-            arr        = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-            frame      = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            frame = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
             if frame is not None:
                 if frame_q.full():
-                    try:
-                        frame_q.get_nowait()
-                    except queue.Empty:
-                        pass
-                frame_q.put_nowait((frame, p.get("meta", {})))
+                    frame_q.get_nowait()
+                frame_q.put_nowait((frame, meta))
+        # Sau này sẽ thêm EVIDENCE ở đây (xem phần lưu alert)
 
-        elif t == "event":
-            try:
-                event_q.put_nowait(p)
-            except queue.Full:
-                pass
-
-        elif t == "status":
-            state = p.get("state", "")
-            print(f"[CLIENT] Server state: {state}")
-            if state in ("stopped", "ended", "error"):
-                return True
-
-    except Exception as e:
-        pass
-    return False
+    elif isinstance(raw, str):
+        try:
+            msg = json.loads(raw)
+            if msg.get("type") == "event":
+                event_q.put_nowait(msg.get("payload", {}))
+            elif msg.get("type") == "status":
+                print(f"[CLIENT] Server state: {msg['payload'].get('state')}")
+        except:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -377,8 +386,8 @@ def main():
     parser.add_argument("--device",       default="cuda",
                         choices=["cuda","cpu","auto"])
     parser.add_argument("--det-interval", type=int,   default=5)
-    parser.add_argument("--stream-width", type=int,   default=640)
-    parser.add_argument("--jpeg-quality", type=int,   default=75)
+    parser.add_argument("--stream-width", type=int,   default=480)
+    parser.add_argument("--jpeg-quality", type=int,   default=30)
 
     # Utility commands
     parser.add_argument("--status",        action="store_true", help="Print server status and exit")
