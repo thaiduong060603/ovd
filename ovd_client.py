@@ -286,8 +286,8 @@ async def stream_camera(ws_url: str, cam_index: int,
                 async for raw in ws:
                     if stop_flag.is_set():
                         break
-                    if isinstance(raw, str):
-                        _handle_message(raw, frame_q, event_q)
+                    if isinstance(raw, str) or isinstance(raw, bytes):
+                        _handle_message(raw, frame_q, event_q)                  
 
             await asyncio.gather(send_frames(), recv_results())
 
@@ -317,7 +317,7 @@ async def receive_stream(ws_url: str, frame_q: queue.Queue,
                 async for raw in ws:
                     if stop_flag.is_set():
                         break
-                    if isinstance(raw, str):
+                    if isinstance(raw, str) or isinstance(raw, bytes):
                         done = _handle_message(raw, frame_q, event_q)
                         if done:
                             stop_flag.set()

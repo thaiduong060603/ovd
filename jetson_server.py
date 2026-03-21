@@ -82,6 +82,7 @@ class Session:
         # Queues for WebSocket handler
         self.frame_queue:  queue.Queue = queue.Queue(maxsize=6)
         self.event_queue:  queue.Queue = queue.Queue(maxsize=100)
+        self.evidence_queue: queue.Queue = queue.Queue(maxsize=20)
 
         # Client camera frame input queue
         self.client_frame_queue: queue.Queue = queue.Queue(maxsize=4)
@@ -366,6 +367,15 @@ async def stream_endpoint(ws: WebSocket):
                 except queue.Empty:
                     pass
 
+                try:
+                    while True:
+                        jpeg_bytes, ev_meta = session.evidence_queue.get_nowait()
+                        await ws.send_bytes(
+                            b"EVIDENCE" + jpeg_bytes + b"__META__" + json.dumps(ev_meta).encode()
+                        )
+                except queue.Empty:
+                    pass
+                
                 # 2. Gửi events (vẫn giữ JSON vì ít)
                 try:
                     while True:
@@ -511,6 +521,22 @@ def _pipeline_worker():
                     pass
                 print(f"[EVENT] {evt.event_id}  rule={evt.rule_id}  track={evt.track_id}")
 
+                # Luu Evidence
+                evidence_jpeg = _annotate(frame.copy(), tracks, engine, rule, ...)  # hoặc frame gốc
+                _, buf = cv2.imencode(".jpg", evidence_jpeg, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                
+                evidence_data = {
+                    "event_id": evt.event_id,
+                    "rule_id": evt.rule_id,
+                    "track_id": evt.track_id,
+                    "timestamp": timestamp,
+                    "frame_id": session.frame_id,
+                }
+                try:
+                    session.evidence_queue.put_nowait((buf.tobytes(), evidence_data))
+                except queue.Full:
+                    pass
+
             # ── FPS ───────────────────────────────────────────────────────────
             fps_counter += 1
             if fps_counter >= 15:
@@ -566,6 +592,7 @@ def _pipeline_worker():
                 except queue.Empty:
                     pass
             try:
+                print(f"[SERVER] Pushed frame {session.frame_id} to queue (size={session.frame_queue.qsize()})")
                 session.frame_queue.put_nowait((jpeg_buf.tobytes(), meta))
             except queue.Full:
                 pass
