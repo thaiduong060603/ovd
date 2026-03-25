@@ -243,6 +243,11 @@ class OVDClientGUI(tk.Tk):
         self._poll_events()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+    # --- Add these for Interactive ROI & Tasks ---
+        self.roi_points = []
+        self.last_frame_shape = (0, 0)
+        self.canvas_scale = 1.0
+        self.canvas_offset = (0, 0)        
 
     # ── UI construction ────────────────────────────────────────────────────
 
@@ -335,19 +340,36 @@ class OVDClientGUI(tk.Tk):
             scrollregion=canvas.bbox("all")))
 
         self._build_connection(inner)
+        self._build_task_selector(inner)
         self._build_source(inner)
         self._build_pipeline(inner)
         self._build_livectrl(inner)
         self._build_utility(inner)
 
         return scroll_frame
+    
+    def _build_task_selector(self, parent):
+        card, body = self._card(parent, "Task Selection")
+        card.pack(fill="x", padx=8, pady=(10, 0))
+        self.var_task = tk.IntVar(value=1)
+        tasks = [
+            (1, "ROI Monitoring", "Alert immediately upon zone entry."),
+            (2, "Dwell Time", "Alert after staying in zone for X seconds.")
+        ]
+        for val, name, desc in tasks:
+            rb = tk.Radiobutton(body, text=name, variable=self.var_task, value=val,
+                                bg=BG, fg=TEXT, selectcolor=PANEL, activebackground=BG,
+                                font=FONT_HEAD)
+            rb.pack(anchor="w")
+            tk.Label(body, text=desc, fg=MUTED, bg=BG, font=FONT_LABEL, 
+                     wraplength=300, justify="left").pack(anchor="w", padx=20, pady=(0,5))
 
     def _build_connection(self, parent):
         card, body = self._card(parent, "Connection")
         card.pack(fill="x", padx=8, pady=(8, 0))
         body.columnconfigure(1, weight=1)
 
-        self.var_host = tk.StringVar(value="100.x.x.x")
+        self.var_host = tk.StringVar(value="100.117.245.55")
         self.var_port = tk.StringVar(value="8765")
         self._entry(body, self.var_host, 0, "Jetson Host", width=20)
         self._entry(body, self.var_port, 1, "Port", width=8)
@@ -464,57 +486,73 @@ class OVDClientGUI(tk.Tk):
         card, body = self._card(parent, "Live Controls")
         card.pack(fill="x", padx=8, pady=(10, 0))
 
+        body.columnconfigure(1, weight=1)
+
+        # --- Add box Prompt in Live Controls ---
+        self.var_prompt = tk.StringVar(value="person")
+        self._entry(body, self.var_prompt, 0, "AI Prompt", width=15)
+
         # dwell slider
-        dwell_row = tk.Frame(body, bg=BG)
-        dwell_row.pack(fill="x")
-        tk.Label(dwell_row, text="Dwell (s)", fg=MUTED, bg=BG,
-                 font=FONT_LABEL, width=10, anchor="w").pack(side="left")
+        tk.Label(body, text="Dwell (s)", fg=MUTED, bg=BG,
+                 font=FONT_LABEL, width=10, anchor="w").grid(row=1, column=0, sticky="w", pady=4)
+        dwell_ctrl = tk.Frame(body, bg=BG)
+        dwell_ctrl.grid(row=1, column=1, sticky="ew")
+
         self.var_dwell = tk.DoubleVar(value=2.0)
-        self.dwell_label = tk.Label(dwell_row, text="2.0s", fg=ACCENT, bg=BG,
+        self.dwell_label = tk.Label(dwell_ctrl, text="2.0s", fg=ACCENT, bg=BG,
                                      font=FONT_MONO, width=5)
         self.dwell_label.pack(side="right")
-        sl = ttk.Scale(dwell_row, from_=0.1, to=10.0, orient="horizontal",
+        sl = ttk.Scale(dwell_ctrl, from_=0.1, to=10.0, orient="horizontal",
                        variable=self.var_dwell, command=self._dwell_changed)
-        sl.pack(fill="x", expand=True, padx=(0, 6))
+        sl.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        # confidence
-        conf_row = tk.Frame(body, bg=BG)
-        conf_row.pack(fill="x", pady=(4, 0))
-        tk.Label(conf_row, text="Confidence", fg=MUTED, bg=BG,
-                 font=FONT_LABEL, width=10, anchor="w").pack(side="left")
+        # Row 2: Confidence
+        tk.Label(body, text="Confidence", fg=MUTED, bg=BG,
+                 font=FONT_LABEL, width=10, anchor="w").grid(row=2, column=0, sticky="w", pady=4)
+        
+        conf_ctrl = tk.Frame(body, bg=BG)
+        conf_ctrl.grid(row=2, column=1, sticky="ew")
+        
         self.var_conf = tk.DoubleVar(value=0.35)
-        self.conf_label = tk.Label(conf_row, text="0.35", fg=ACCENT, bg=BG,
+        self.conf_label = tk.Label(conf_ctrl, text="0.35", fg=ACCENT, bg=BG,
                                     font=FONT_MONO, width=5)
         self.conf_label.pack(side="right")
-        ttk.Scale(conf_row, from_=0.05, to=1.0, orient="horizontal",
-                  variable=self.var_conf,
-                  command=lambda v: self.conf_label.config(
-                      text=f"{float(v):.2f}")
-                  ).pack(fill="x", expand=True, padx=(0, 6))
+        
+        sl_conf = ttk.Scale(conf_ctrl, from_=0.05, to=1.0, orient="horizontal",
+                            variable=self.var_conf,
+                            command=lambda v: self.conf_label.config(text=f"{float(v):.2f}"))
+        sl_conf.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        # box threshold
-        bth_row = tk.Frame(body, bg=BG)
-        bth_row.pack(fill="x", pady=(4, 0))
-        tk.Label(bth_row, text="Box Thresh.", fg=MUTED, bg=BG,
-                 font=FONT_LABEL, width=10, anchor="w").pack(side="left")
+        # Row 3: Box Threshold
+        tk.Label(body, text="Box Thresh.", fg=MUTED, bg=BG,
+                 font=FONT_LABEL, width=10, anchor="w").grid(row=3, column=0, sticky="w", pady=4)
+        
+        bth_ctrl = tk.Frame(body, bg=BG)
+        bth_ctrl.grid(row=3, column=1, sticky="ew")
+        
         self.var_bth = tk.DoubleVar(value=0.3)
-        self.bth_label = tk.Label(bth_row, text="0.30", fg=ACCENT, bg=BG,
+        self.bth_label = tk.Label(bth_ctrl, text="0.30", fg=ACCENT, bg=BG,
                                    font=FONT_MONO, width=5)
         self.bth_label.pack(side="right")
-        ttk.Scale(bth_row, from_=0.05, to=1.0, orient="horizontal",
-                  variable=self.var_bth,
-                  command=lambda v: self.bth_label.config(
-                      text=f"{float(v):.2f}")
-                  ).pack(fill="x", expand=True, padx=(0, 6))
+        
+        sl_bth = ttk.Scale(bth_ctrl, from_=0.05, to=1.0, orient="horizontal",
+                           variable=self.var_bth,
+                           command=lambda v: self.bth_label.config(text=f"{float(v):.2f}"))
+        sl_bth.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        # push update button
-        tk.Button(body, text="⟳  Push Config Update",
-                  bg=BORDER, fg=ACCENT,
-                  activebackground=ACCENT, activeforeground=BG,
-                  relief="flat", cursor="hand2", pady=5,
-                  font=("Consolas", 9, "bold"),
-                  command=self._push_config
-                  ).pack(fill="x", pady=(8, 2))
+        # Buttons: Dùng grid để nằm dưới cùng, trải dài qua 2 cột
+        btn_push = tk.Button(body, text="⟳  Push Config Update",
+                             bg=BORDER, fg=ACCENT, font=("Consolas", 9, "bold"),
+                             activebackground=ACCENT, activeforeground=BG,
+                             relief="flat", cursor="hand2", pady=5,
+                             command=self._push_config)
+        btn_push.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 2))
+
+        btn_clear = tk.Button(body, text="✖ Clear Drawn ROI", 
+                              bg=PANEL, fg=ACCENT2, font=FONT_MONO,
+                              relief="flat", cursor="hand2", pady=5,
+                              command=self._clear_roi)
+        btn_clear.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 0))        
 
     def _build_utility(self, parent):
         card, body = self._card(parent, "Session")
@@ -617,6 +655,9 @@ class OVDClientGUI(tk.Tk):
         self.log.tag_config("success", foreground=SUCCESS)
         self.log.tag_config("warn",    foreground=WARNING)
         self.log.tag_config("muted",   foreground=MUTED)
+
+        # BLIND
+        self.canvas.bind("<Button-1>", self._on_canvas_click)
 
         return frame
 
@@ -832,6 +873,21 @@ class OVDClientGUI(tk.Tk):
 
         threading.Thread(target=_do, daemon=True).start()
 
+    def _on_canvas_click(self, event):
+        if self.last_frame_shape == (0, 0): return
+        h_f, w_f = self.last_frame_shape
+        # Tính toán tọa độ từ Canvas click ngược về Video Pixel
+        vx = int((event.x - self.canvas_offset[0]) / self.canvas_scale)
+        vy = int((event.y - self.canvas_offset[1]) / self.canvas_scale)
+        # Limit in frame
+        vx, vy = max(0, min(vx, w_f)), max(0, min(vy, h_f))
+        self.roi_points.append([vx, vy])
+        self._log(f"Point Added: [{vx}, {vy}]", "info")
+
+    def _clear_roi(self):
+        self.roi_points = []
+        self._log("ROI points cleared.", "warn")
+
     def _push_config(self):
         def _do():
             try:
@@ -840,12 +896,15 @@ class OVDClientGUI(tk.Tk):
                     dwell_seconds=round(self.var_dwell.get(), 1),
                     min_confidence=round(self.var_conf.get(), 3),
                     box_threshold=round(self.var_bth.get(), 3),
+                    prompt_positive=self.var_prompt.get(),
+                    roi_points=self.roi_points
                 )
                 changed = result.get("changed", {})
                 self.after(0, lambda: self._log(
                     f"Config updated: {changed}", "success"))
             except Exception as e:
-                self.after(0, lambda: self._log(f"Config error: {e}", "alert"))
+                error_msg = str(e)
+                self.after(0, lambda msg=error_msg: self._log(f"Config error: {msg}", "alert"))
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -888,8 +947,17 @@ class OVDClientGUI(tk.Tk):
             return
 
         h_f, w_f = frame.shape[:2]
+        self.last_frame_shape = (h_f, w_f)
+
         scale = min(w_c / w_f, h_c / h_f)
+        self.canvas_scale = scale
         nw, nh = int(w_f * scale), int(h_f * scale)
+        self.canvas_offset = ((w_c - nw) // 2, (h_c - nh) // 2)
+        # --- Vẽ ROI đang chọn lên frame trước khi hiển thị ---
+        if len(self.roi_points) > 1:
+            pts = np.array(self.roi_points, np.int32)
+            cv2.polylines(frame, [pts], True, (0, 255, 255), 3)
+
         resized = cv2.resize(frame, (nw, nh))
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
