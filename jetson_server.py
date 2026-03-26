@@ -313,7 +313,7 @@ def update_config(req: ConfigUpdateRequest):
     # Signal pipeline to hot-reload
     session._config_updated = True
 
-    print(f"[SERVER] Config updated: {changed}")
+    print(f"[SERVER] Config updated: {changed}, {det.get('prompt_positive', '')}, {cond.get('dwell_seconds', '')}")
     return JSONResponse({"status": "ok", "changed": changed})
 
 
