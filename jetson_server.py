@@ -520,9 +520,8 @@ def _pipeline_worker():
                 except queue.Full:
                     pass
                 print(f"[EVENT] {evt.event_id}  rule={evt.rule_id}  track={evt.track_id}")
-
                 # Luu Evidence
-                evidence_jpeg = _annotate(frame.copy(), tracks, engine, rule, ...)  # hoặc frame gốc
+                evidence_jpeg = _annotate(frame.copy(), tracks, engine, rule, session.frame_id, current_fps)  # hoặc frame gốc
                 _, buf = cv2.imencode(".jpg", evidence_jpeg, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 
                 evidence_data = {
