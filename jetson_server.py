@@ -146,6 +146,9 @@ class ConfigUpdateRequest(BaseModel):
     cooldown_seconds: Optional[float] = None
     roi_points:      Optional[list]  = None   # [[x,y], ...] or []
     det_interval:    Optional[int]   = None
+    require_helmetless: Optional[bool] = None
+    near_class:         Optional[str]  = None
+    near_distance_px:   Optional[float] = None    
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +302,19 @@ def update_config(req: ConfigUpdateRequest):
     if req.prompt_positive is not None: det["prompt_positive"]  = req.prompt_positive;changed.append("prompt_positive")
     if req.cooldown_seconds is not None: act["cooldown_seconds"] = req.cooldown_seconds; changed.append("cooldown_seconds")
     if req.det_interval    is not None: session.det_interval    = req.det_interval;   changed.append("det_interval")
+
+    # --- New Logic for Helmet Safety ---
+    if req.require_helmetless is not None: 
+        cond["require_helmetless"] = req.require_helmetless
+        changed.append("require_helmetless")
+
+    # --- New Logic for Proximity Danger ---
+    if req.near_class is not None: 
+        cond["near_class"] = req.near_class
+        changed.append("near_class")
+    if req.near_distance_px is not None: 
+        cond["near_distance_px"] = req.near_distance_px
+        changed.append("near_distance_px")
 
     if req.roi_points is not None:
         roi["enabled"] = len(req.roi_points) > 0
@@ -591,7 +607,6 @@ def _pipeline_worker():
                 except queue.Empty:
                     pass
             try:
-                print(f"[SERVER] Pushed frame {session.frame_id} to queue (size={session.frame_queue.qsize()})")
                 session.frame_queue.put_nowait((jpeg_buf.tobytes(), meta))
             except queue.Full:
                 pass

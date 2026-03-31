@@ -354,7 +354,9 @@ class OVDClientGUI(tk.Tk):
         self.var_task = tk.IntVar(value=1)
         tasks = [
             (1, "ROI Monitoring", "Alert immediately upon zone entry."),
-            (2, "Dwell Time", "Alert after staying in zone for X seconds.")
+            (2, "Dwell Time", "Alert after staying in zone for X seconds."),
+            (3, "Helmet Safety", "Detect workers missing safety helmets."),
+            (4, "Proximity Danger", "Alert when objects are too close to each other.")
         ]
         for val, name, desc in tasks:
             rb = tk.Radiobutton(body, text=name, variable=self.var_task, value=val,
