@@ -140,64 +140,87 @@ def _relay_worker(ws_url: str, stop_flag: threading.Event):
 
 
 def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int = 0, jpeg_quality: int = 70):
-    """Background thread: reads local camera, sends to Jetson, relays results to browser."""
-    async def _run():
-        cap = cv2.VideoCapture(cam_index)
-        if not cap.isOpened():
-            socketio.emit("log", {"msg": f"Cannot open camera index {cam_index}", "level": "error"})
-            return
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
-        try:
-            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, ping_interval=20) as ws:
-                async def send_frames():
-                    while not stop_flag.is_set():
-                        ok, frame = cap.read()
-                        if not ok:
-                            break
-                        _, buf = cv2.imencode(".jpg", frame, encode_params)
-                        await ws.send(buf.tobytes())
-                        await asyncio.sleep(0.033)
+    """
+    Browser-camera relay: browser sends JPEG frames via SocketIO 'camera_frame' event.
+    This thread opens a persistent WebSocket to Jetson, forwards those frames,
+    and relays annotated results back to the browser via SocketIO.
+    NOTE: cv2.VideoCapture is NOT used — the camera lives in the browser/laptop.
+    """
+    _cam_frame_queue: queue.Queue = queue.Queue(maxsize=4)
 
-                async def recv_results():
-                    async for raw in ws:
-                        if stop_flag.is_set():
-                            break
-                        if isinstance(raw, bytes):
-                            if raw.startswith(b"FRAME"):
-                                idx = raw.find(b"__META__")
-                                if idx == -1:
-                                    continue
-                                jpeg_bytes = raw[5:idx]
-                                meta_bytes = raw[idx + 8:]
-                                try:
-                                    meta = json.loads(meta_bytes.decode("utf-8"))
-                                except Exception:
-                                    meta = {}
-                                b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                                socketio.emit("frame", {"jpeg": b64, "meta": meta})
-                            elif raw.startswith(b"EVIDENCE"):
-                                idx = raw.find(b"__META__")
-                                if idx == -1:
-                                    continue
-                                jpeg_bytes = raw[8:idx]
-                                meta_bytes = raw[idx + 8:]
-                                try:
-                                    ev_meta = json.loads(meta_bytes.decode("utf-8"))
-                                except Exception:
-                                    ev_meta = {}
-                                b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                                socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
-                        elif isinstance(raw, str):
+    @socketio.on("camera_frame")
+    def _on_camera_frame(data):
+        """Browser sends: {'jpeg_b64': '<base64 string>'}"""
+        try:
+            jpeg_bytes = base64.b64decode(data.get("jpeg_b64", ""))
+            if not _cam_frame_queue.full():
+                _cam_frame_queue.put_nowait(jpeg_bytes)
+        except Exception:
+            pass
+
+    async def _run():
+        while not stop_flag.is_set():
+            try:
+                async with websockets.connect(
+                    ws_url, max_size=20 * 1024 * 1024, ping_interval=20
+                ) as ws:
+
+                    async def send_frames():
+                        while not stop_flag.is_set():
                             try:
-                                msg = json.loads(raw)
-                                if msg.get("type") == "event":
-                                    socketio.emit("alert_event", msg.get("payload", {}))
-                            except Exception:
+                                jpeg_bytes = await asyncio.get_event_loop().run_in_executor(
+                                    None, lambda: _cam_frame_queue.get(timeout=1.0)
+                                )
+                                await ws.send(jpeg_bytes)
+                            except queue.Empty:
                                 pass
 
-                await asyncio.gather(send_frames(), recv_results())
-        finally:
-            cap.release()
+                    async def recv_results():
+                        async for raw in ws:
+                            if stop_flag.is_set():
+                                break
+                            if isinstance(raw, bytes):
+                                if raw.startswith(b"FRAME"):
+                                    idx = raw.find(b"__META__")
+                                    if idx == -1:
+                                        continue
+                                    jpeg_bytes = raw[5:idx]
+                                    meta_bytes = raw[idx + 8:]
+                                    try:
+                                        meta = json.loads(meta_bytes.decode("utf-8"))
+                                    except Exception:
+                                        meta = {}
+                                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+                                    socketio.emit("frame", {"jpeg": b64, "meta": meta})
+                                elif raw.startswith(b"EVIDENCE"):
+                                    idx = raw.find(b"__META__")
+                                    if idx == -1:
+                                        continue
+                                    jpeg_bytes = raw[8:idx]
+                                    meta_bytes = raw[idx + 8:]
+                                    try:
+                                        ev_meta = json.loads(meta_bytes.decode("utf-8"))
+                                    except Exception:
+                                        ev_meta = {}
+                                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+                                    socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
+                            elif isinstance(raw, str):
+                                try:
+                                    msg = json.loads(raw)
+                                    if msg.get("type") == "event":
+                                        socketio.emit("alert_event", msg.get("payload", {}))
+                                except Exception:
+                                    pass
+
+                    await asyncio.gather(send_frames(), recv_results())
+
+            except (ConnectionRefusedError, OSError):
+                pass
+            except Exception:
+                pass
+
+            if not stop_flag.is_set():
+                await asyncio.sleep(2.0)
 
     asyncio.run(_run())
 
@@ -670,8 +693,19 @@ roi:
           <!-- client_camera -->
           <div id="srcCamera" style="display:none">
             <div class="field">
-              <label>CAMERA INDEX</label>
-              <input type="number" id="camIndex" value="0" min="0" max="10"/>
+              <label>CAMERA PREVIEW (laptop)</label>
+              <video id="localVideo" autoplay playsinline muted
+                style="width:100%;border-radius:4px;border:1px solid var(--border2);background:#000;max-height:120px;object-fit:cover"></video>
+            </div>
+            <div class="field">
+              <label>JPEG QUALITY (capture) <span class="slider-val" id="camQVal">70</span></label>
+              <input type="range" id="camQuality" min="30" max="95" step="5" value="70"
+                oninput="document.getElementById('camQVal').textContent=this.value"/>
+            </div>
+            <div class="field">
+              <label>FPS (capture) <span class="slider-val" id="camFpsVal">15</span></label>
+              <input type="range" id="camFps" min="5" max="30" step="1" value="15"
+                oninput="document.getElementById('camFpsVal').textContent=this.value"/>
             </div>
           </div>
         </div>
@@ -1043,6 +1077,67 @@ function onSrcChange(el) {
   document.getElementById('srcVideoFile').style.display  = val === 'video_file'    ? '' : 'none';
   document.getElementById('srcJetsonFile').style.display = val === 'jetson_file'   ? '' : 'none';
   document.getElementById('srcCamera').style.display     = val === 'client_camera' ? '' : 'none';
+  if (val === 'client_camera') {
+    startLocalPreview();
+  } else {
+    stopLocalPreview();
+  }
+}
+
+// ── BROWSER CAMERA (getUserMedia) ──────────────────────────────────────
+let _localStream    = null;
+let _camCaptureLoop = null;
+const _offscreenCanvas = document.createElement('canvas');
+const _offscreenCtx    = _offscreenCanvas.getContext('2d');
+
+async function startLocalPreview() {
+  try {
+    _localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const vid = document.getElementById('localVideo');
+    vid.srcObject = _localStream;
+    log('Laptop camera started', 'success');
+  } catch(e) {
+    log(`Camera access denied: ${e}`, 'error');
+  }
+}
+
+function stopLocalPreview() {
+  if (_localStream) {
+    _localStream.getTracks().forEach(t => t.stop());
+    _localStream = null;
+  }
+  const vid = document.getElementById('localVideo');
+  vid.srcObject = null;
+  stopCameraCapture();
+}
+
+function startCameraCapture() {
+  if (_camCaptureLoop) return;
+  const vid = document.getElementById('localVideo');
+  const fps = parseInt(document.getElementById('camFps').value) || 15;
+  const quality = (parseInt(document.getElementById('camQuality').value) || 70) / 100;
+  const interval = 1000 / fps;
+
+  _camCaptureLoop = setInterval(() => {
+    if (!_localStream || !socket || !sessionRunning) return;
+    const w = vid.videoWidth, h = vid.videoHeight;
+    if (!w || !h) return;
+    _offscreenCanvas.width  = w;
+    _offscreenCanvas.height = h;
+    _offscreenCtx.drawImage(vid, 0, 0, w, h);
+    // Get JPEG as base64 (strip data:image/jpeg;base64, prefix)
+    const dataUrl = _offscreenCanvas.toDataURL('image/jpeg', quality);
+    const b64 = dataUrl.split(',')[1];
+    socket.emit('camera_frame', { jpeg_b64: b64 });
+  }, interval);
+  log(`Camera capture started at ${fps} FPS`, 'info');
+}
+
+function stopCameraCapture() {
+  if (_camCaptureLoop) {
+    clearInterval(_camCaptureLoop);
+    _camCaptureLoop = null;
+  }
 }
 
 // ── TASK YAML TEMPLATES ────────────────────────────────────────────────
@@ -1219,6 +1314,9 @@ async function startSession() {
       setStatus('LIVE', 'live');
       document.getElementById('btnStop').disabled = false;
       log('Session started ✓', 'success');
+      // If using laptop webcam, start sending frames to server
+      const srcVal2 = document.querySelector('input[name="src"]:checked').value;
+      if (srcVal2 === 'client_camera') startCameraCapture();
       // Sync dwell from rule
       const m = ruleYaml.match(/dwell_seconds:\s*([\d.]+)/);
       if (m) {
@@ -1247,6 +1345,7 @@ async function stopSession() {
     log('Session stopped', 'warn');
   } catch(e) { log(`Stop error: ${e}`, 'error'); }
   sessionRunning = false;
+  stopCameraCapture();
   setStatus('IDLE', '');
   document.getElementById('btnStart').disabled = false;
   document.getElementById('videoPlaceholder').style.display = '';
