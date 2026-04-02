@@ -1294,7 +1294,7 @@ async function startSession() {
     det_interval:  parseInt(document.getElementById('detInterval').value),
     stream_width:  parseInt(document.getElementById('streamWidth').value),
     jpeg_quality:  parseInt(document.getElementById('jpegQuality').value),
-    cam_index:     parseInt(document.getElementById('camIndex').value),
+    cam_index:     parseInt(document.getElementById('camIndex')?.value || 0),
   };
   if (srcVal === 'jetson_file') {
     payload.jetson_file_path = document.getElementById('jetsonFilePath').value.trim();
