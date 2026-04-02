@@ -693,15 +693,23 @@ roi:
           <!-- client_camera -->
           <div id="srcCamera" style="display:none">
             <div class="field">
+              <label>CAMERA INDEX (Laptop / Webcam)</label>
+              <input type="number" id="camIndex" value="0" min="0" max="10" 
+                    style="width: 100%; padding: 6px; background: var(--surface); border: 1px solid var(--border2); color: var(--text);">
+            </div>
+
+            <div class="field">
               <label>CAMERA PREVIEW (laptop)</label>
               <video id="localVideo" autoplay playsinline muted
                 style="width:100%;border-radius:4px;border:1px solid var(--border2);background:#000;max-height:120px;object-fit:cover"></video>
             </div>
+            
             <div class="field">
               <label>JPEG QUALITY (capture) <span class="slider-val" id="camQVal">70</span></label>
               <input type="range" id="camQuality" min="30" max="95" step="5" value="70"
                 oninput="document.getElementById('camQVal').textContent=this.value"/>
             </div>
+            
             <div class="field">
               <label>FPS (capture) <span class="slider-val" id="camFpsVal">15</span></label>
               <input type="range" id="camFps" min="5" max="30" step="1" value="15"
