@@ -616,6 +616,8 @@ roi:
 </textarea>
           </div>
           <button class="btn btn-ghost btn-full" onclick="loadDefaultYaml()">⎙ LOAD TASK TEMPLATE</button>
+          <input type="file" id="importYaml" accept=".yaml,.yml" style="display:none" onchange="importYamlFile(this)">
+          <button class="btn btn-ghost btn-full" style="margin-top:5px" onclick="document.getElementById('importYaml').click()">📁 IMPORT FROM COMPUTER</button>
         </div>
       </div>
 
@@ -1122,6 +1124,25 @@ function loadDefaultYaml() {
   const task = document.querySelector('input[name="task"]:checked').value;
   document.getElementById('ruleYaml').value = YAML_TEMPLATES[task] || YAML_TEMPLATES[1];
   log(`Loaded template for task ${task}`, 'info');
+}
+
+function importYamlFile(input) {
+  if (!input.files.length) return;
+  const file = input.files[0];
+  const reader = new FileReader();
+  
+  reader.onload = (e) => {
+    document.getElementById('ruleYaml').value = e.target.result;
+    log(`Imported YAML configuration from: ${file.name}`, 'success');
+    // Reset input để có thể chọn lại cùng 1 file nếu cần
+    input.value = ''; 
+  };
+  
+  reader.onerror = () => {
+    log('Error reading YAML file', 'error');
+  };
+  
+  reader.readAsText(file);
 }
 
 // ── UPLOAD VIDEO ───────────────────────────────────────────────────────
