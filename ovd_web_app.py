@@ -1456,7 +1456,7 @@ def main():
     print("  Open in browser: http://localhost:5000")
     print("=" * 62)
 
-    socketio.run(app, host=args.host, port=args.port, debug=args.debug, allow_unsafe_werkzeug=True)
+    socketio.run(app, host=args.host, port=args.port, debug=args.debug, allow_unsafe_werkzeug=True, ssl_context=('cert.crt', 'cert.key'))
 
 
 if __name__ == "__main__":
