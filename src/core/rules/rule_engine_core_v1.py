@@ -104,6 +104,10 @@ class RuleEngineV1:
         # ── Dwell timers: (track_id, rule_id) → first_timestamp ──────────────
         self.track_rule_timers: Dict[Tuple, float]      = {}
         self.track_rule_frames: Dict[Tuple, List[int]]  = defaultdict(list)
+        # (track_id, rule_id) -> frame_id cuối cùng còn thấy đối tượng trong vùng
+        self.track_last_seen_frame: Dict[Tuple, int] = {}
+        # Ngưỡng ân hạn (ví dụ: 45 frame ~ 1.5 giây nếu chạy 30fps)
+        self.grace_period_frames = 60
 
         # ── entered_polygon: track_id → was_inside last frame ─────────────────
         # key: (track_id, rule_id) → bool
@@ -140,10 +144,13 @@ class RuleEngineV1:
         self.infer_helmet_status(tracks)
 
         # Step 2 — evaluate each rule against each track
+        current_active_keys = set()
         for rule in self.rules:
             for track in tracks:
                 matched = self._evaluate_operators(rule, track, tracks, frame_id, timestamp)
                 if matched:
+                    key = (track.track_id, rule.rule_id) # Lấy key
+                    current_active_keys.add(key) # GIỮ TIMER
                     incident = self._check_dwell_time(track, rule, frame_id, timestamp)
                     if incident:
                         updated_incidents.append(incident)
@@ -152,9 +159,9 @@ class RuleEngineV1:
                             event = self._emit_event(incident, track, rule, timestamp, frame_id)
                             if event:
                                 self.events.append(event)
-                else:
-                    self._reset_timer(track.track_id, rule.rule_id)
-
+                # else:
+                #     self._reset_timer(track.track_id, rule.rule_id)
+        self._manage_timers(current_active_keys, frame_id)
         # Step 3 — update entered_polygon memory for next frame
         self._update_inside_memory(tracks, frame_id)
 
@@ -415,6 +422,28 @@ class RuleEngineV1:
         key = (track_id, rule_id)
         self.track_rule_timers.pop(key, None)
         self.track_rule_frames.pop(key, None)
+    def _manage_timers(self, active_track_rule_keys: set, current_frame_id: int):
+        """
+        Hàm mới để quét và dọn dẹp các timer đã quá hạn. (Update of func _reset_timer)
+        active_track_rule_keys: Tập hợp các cặp (tid, rid) đang xuất hiện ở frame hiện tại.
+        """
+        # Lấy danh sách tất cả các cặp (track, rule) đang được theo dõi timer
+        all_keys = list(self.track_rule_timers.keys())
+        
+        for key in all_keys:
+            if key in active_track_rule_keys:
+                # Nếu vẫn đang thấy đối tượng -> Cập nhật frame cuối cùng nhìn thấy
+                self.track_last_seen_frame[key] = current_frame_id
+            else:
+                # Nếu KHÔNG thấy đối tượng ở frame này -> Kiểm tra xem đã mất dấu bao lâu
+                last_frame = self.track_last_seen_frame.get(key, 0)
+                if (current_frame_id - last_frame) > self.grace_period_frames:
+                    # Đã quá thời gian ân hạn -> Reset thực sự
+                    self.track_rule_timers.pop(key, None)
+                    self.track_rule_frames.pop(key, None)
+                    self.track_last_seen_frame.pop(key, None)
+                    # (Tùy chọn) Xóa trạng thái inside để reset logic 'entered_polygon'
+                    self._was_inside.pop(key, None)        
 
     def _update_inside_memory(self, tracks: List[Track], frame_id: int):
         """Store current inside/outside state for entered_polygon next frame."""
