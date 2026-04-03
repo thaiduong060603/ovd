@@ -50,7 +50,7 @@ JETSON_BASE_URL = "http://localhost:8765"   # overridable via --jetson arg
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "ovd-watchdog-secret"
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading",
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet",
                     max_http_buffer_size=10 * 1024 * 1024)
 
 # Internal relay state
@@ -1457,16 +1457,27 @@ def main():
     KEY_FILE = "/home/app/certs/key.pem"
 
     import os
+    import eventlet
+    import eventlet.wsgi
+
     if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
-        print("SSL Certificates found. Starting in HTTPS mode...")
-        # Thêm ssl_context để chạy HTTPS
-        socketio.run(app, host=args.host, port=args.port, debug=args.debug, 
-                     allow_unsafe_werkzeug=True, 
-                     ssl_context=(CERT_FILE, KEY_FILE))
+        print(" [!] SSL Found. Starting Production Server with Eventlet (HTTPS)")
+        # Tạo ssl_context theo chuẩn eventlet
+        pool = eventlet.GreenPool()
+        listener = eventlet.listen((args.host, args.port))
+        
+        # Cấu hình SSL
+        import ssl
+        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ctx.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+        # Chạy server
+        eventlet.wsgi.server(eventlet.wrap_ssl(listener, 
+                                               certfile=CERT_FILE, 
+                                               keyfile=KEY_FILE, 
+                                               server_side=True), app)
     else:
         print("SSL Certificates NOT found. Starting in HTTP mode...")
-        socketio.run(app, host=args.host, port=args.port, debug=args.debug, 
-                     allow_unsafe_werkzeug=True)
+        socketio.run(app, host=args.host, port=args.port, debug=args.debug)
     _relay_stop = threading.Event()
 
     print("=" * 62)
