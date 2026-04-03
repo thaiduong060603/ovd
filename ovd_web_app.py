@@ -1453,6 +1453,20 @@ def main():
     args = parser.parse_args()
 
     JETSON_BASE_URL = args.jetson
+    CERT_FILE = "/home/app/certs/cert.pem"
+    KEY_FILE = "/home/app/certs/key.pem"
+
+    import os
+    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+        print("SSL Certificates found. Starting in HTTPS mode...")
+        # Thêm ssl_context để chạy HTTPS
+        socketio.run(app, host=args.host, port=args.port, debug=args.debug, 
+                     allow_unsafe_werkzeug=True, 
+                     ssl_context=(CERT_FILE, KEY_FILE))
+    else:
+        print("SSL Certificates NOT found. Starting in HTTP mode...")
+        socketio.run(app, host=args.host, port=args.port, debug=args.debug, 
+                     allow_unsafe_werkzeug=True)
     _relay_stop = threading.Event()
 
     print("=" * 62)
