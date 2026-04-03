@@ -1453,6 +1453,8 @@ def main():
     args = parser.parse_args()
 
     JETSON_BASE_URL = args.jetson
+    _relay_stop = threading.Event()   # ← khởi tạo TRƯỚC khi server chạy
+
     CERT_FILE = "/home/app/certs/cert.pem"
     KEY_FILE = "/home/app/certs/key.pem"
 
@@ -1460,27 +1462,6 @@ def main():
     import eventlet
     import eventlet.wsgi
     import ssl
-
-    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
-        print(" [!] SSL Found. Starting Production Server with Eventlet (HTTPS)")
-        print(f" [!] Starting HTTPS at: https://{args.host}:{args.port}")
-        # Tạo SSL Context chuẩn
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
-        
-        # Lắng nghe kết nối
-        sock = eventlet.listen((args.host, args.port))
-        
-        # Wrap socket với SSL và chạy WSGI server
-        secure_sock = eventlet.wrap_ssl(sock, 
-                                        certfile=CERT_FILE, 
-                                        keyfile=KEY_FILE, 
-                                        server_side=True)
-        eventlet.wsgi.server(secure_sock, app)
-    else:
-        print("SSL Certificates NOT found. Starting in HTTP mode...")
-        socketio.run(app, host=args.host, port=args.port, debug=args.debug)
-    _relay_stop = threading.Event()
 
     print("=" * 62)
     print("  OVD WATCHDOG — WEB APPLICATION")
@@ -1491,7 +1472,20 @@ def main():
     print("  Open in browser: http://localhost:5000")
     print("=" * 62)
 
-    socketio.run(app, host=args.host, port=args.port, debug=args.debug, allow_unsafe_werkzeug=True)
+    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
+        print(" [!] SSL Found. Starting Production Server with Eventlet (HTTPS)")
+        print(f" [!] Starting HTTPS at: https://{args.host}:{args.port}")
+        sock = eventlet.listen((args.host, args.port))
+        secure_sock = eventlet.wrap_ssl(sock,
+                                        certfile=CERT_FILE,
+                                        keyfile=KEY_FILE,
+                                        server_side=True)
+        eventlet.wsgi.server(secure_sock, app)  # blocking — không có lệnh nào sau đây chạy
+    else:
+        print("SSL Certificates NOT found. Starting in HTTP mode...")
+        # Chỉ gọi socketio.run() MỘT LẦN duy nhất
+        socketio.run(app, host=args.host, port=args.port,
+                     debug=args.debug, allow_unsafe_werkzeug=True)
 
 
 if __name__ == "__main__":
