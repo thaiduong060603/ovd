@@ -1459,22 +1459,24 @@ def main():
     import os
     import eventlet
     import eventlet.wsgi
+    import ssl
 
     if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
         print(" [!] SSL Found. Starting Production Server with Eventlet (HTTPS)")
-        # Tạo ssl_context theo chuẩn eventlet
-        pool = eventlet.GreenPool()
-        listener = eventlet.listen((args.host, args.port))
+        print(f" [!] Starting HTTPS at: https://{args.host}:{args.port}")
+        # Tạo SSL Context chuẩn
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
         
-        # Cấu hình SSL
-        import ssl
-        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ctx.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
-        # Chạy server
-        eventlet.wsgi.server(eventlet.wrap_ssl(listener, 
-                                               certfile=CERT_FILE, 
-                                               keyfile=KEY_FILE, 
-                                               server_side=True), app)
+        # Lắng nghe kết nối
+        sock = eventlet.listen((args.host, args.port))
+        
+        # Wrap socket với SSL và chạy WSGI server
+        secure_sock = eventlet.wrap_ssl(sock, 
+                                        certfile=CERT_FILE, 
+                                        keyfile=KEY_FILE, 
+                                        server_side=True)
+        eventlet.wsgi.server(secure_sock, app)
     else:
         print("SSL Certificates NOT found. Starting in HTTP mode...")
         socketio.run(app, host=args.host, port=args.port, debug=args.debug)
