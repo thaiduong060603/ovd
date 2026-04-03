@@ -1446,46 +1446,58 @@ def main():
     global JETSON_BASE_URL, _relay_stop
 
     parser = argparse.ArgumentParser(description="OVD Watchdog — Flask Web App")
-    parser.add_argument("--host",   default="0.0.0.0", help="Bind host")
-    parser.add_argument("--port",   type=int, default=5000, help="Web server port")
+    parser.add_argument("--host",   default="0.0.0.0",              help="Bind host")
+    parser.add_argument("--port",   type=int, default=5000,          help="Web server port")
     parser.add_argument("--jetson", default="http://localhost:8765", help="Jetson GPU server URL")
+    parser.add_argument("--no-ssl", action="store_true",             help="Force HTTP even if cert files exist")
     parser.add_argument("--debug",  action="store_true")
     args = parser.parse_args()
 
     JETSON_BASE_URL = args.jetson
-    _relay_stop = threading.Event()   # ← khởi tạo TRƯỚC khi server chạy
-
-    CERT_FILE = "/home/app/certs/cert.pem"
-    KEY_FILE = "/home/app/certs/key.pem"
+    _relay_stop = threading.Event()
 
     import os
-    import eventlet
-    import eventlet.wsgi
     import ssl
+
+    CERT_FILE = "/home/app/certs/cert.pem"
+    KEY_FILE  = "/home/app/certs/key.pem"
+
+    use_ssl = (not args.no_ssl
+               and os.path.exists(CERT_FILE)
+               and os.path.exists(KEY_FILE))
+
+    scheme = "https" if use_ssl else "http"
 
     print("=" * 62)
     print("  OVD WATCHDOG — WEB APPLICATION")
     print("=" * 62)
-    print(f"  Web UI   : http://{args.host}:{args.port}")
+    print(f"  Web UI   : {scheme}://{args.host}:{args.port}")
     print(f"  Jetson   : {JETSON_BASE_URL}")
+    print(f"  SSL      : {'ON  (' + CERT_FILE + ')' if use_ssl else 'OFF (HTTP mode)'}")
     print()
-    print("  Open in browser: http://localhost:5000")
+    print(f"  Open in browser: {scheme}://localhost:{args.port}")
+    if use_ssl:
+        print("  NOTE: If using a self-signed cert, accept the browser security warning")
+        print("        or run with --no-ssl to use plain HTTP instead.")
     print("=" * 62)
 
-    if os.path.exists(CERT_FILE) and os.path.exists(KEY_FILE):
-        print(" [!] SSL Found. Starting Production Server with Eventlet (HTTPS)")
-        print(f" [!] Starting HTTPS at: https://{args.host}:{args.port}")
-        sock = eventlet.listen((args.host, args.port))
-        secure_sock = eventlet.wrap_ssl(sock,
-                                        certfile=CERT_FILE,
-                                        keyfile=KEY_FILE,
-                                        server_side=True)
-        eventlet.wsgi.server(secure_sock, app)  # blocking — không có lệnh nào sau đây chạy
+    if use_ssl:
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_ctx.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+        print(f" [!] Starting HTTPS on port {args.port} ...")
+        socketio.run(app,
+                     host=args.host,
+                     port=args.port,
+                     debug=args.debug,
+                     ssl_context=ssl_ctx,
+                     allow_unsafe_werkzeug=True)
     else:
-        print("SSL Certificates NOT found. Starting in HTTP mode...")
-        # Chỉ gọi socketio.run() MỘT LẦN duy nhất
-        socketio.run(app, host=args.host, port=args.port,
-                     debug=args.debug, allow_unsafe_werkzeug=True)
+        print(f" [!] Starting HTTP on port {args.port} ...")
+        socketio.run(app,
+                     host=args.host,
+                     port=args.port,
+                     debug=args.debug,
+                     allow_unsafe_werkzeug=True)
 
 
 if __name__ == "__main__":
