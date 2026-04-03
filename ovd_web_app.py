@@ -1482,15 +1482,17 @@ def main():
     print("=" * 62)
 
     if use_ssl:
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_ctx.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+        import eventlet
+        import eventlet.wsgi
         print(f" [!] Starting HTTPS on port {args.port} ...")
-        socketio.run(app,
-                     host=args.host,
-                     port=args.port,
-                     debug=args.debug,
-                     ssl_context=ssl_ctx,
-                     allow_unsafe_werkzeug=True)
+        sock = eventlet.listen((args.host, args.port))
+        secure_sock = eventlet.wrap_ssl(
+            sock,
+            certfile=CERT_FILE,
+            keyfile=KEY_FILE,
+            server_side=True,
+        )
+        eventlet.wsgi.server(secure_sock, app)
     else:
         print(f" [!] Starting HTTP on port {args.port} ...")
         socketio.run(app,
