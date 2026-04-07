@@ -172,7 +172,8 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
     def _parse_and_emit(raw):
         """Parse binary message từ Jetson và emit lên browser."""
         if not isinstance(raw, bytes):
-            print(f"DEBUG: Received raw data from Jetson, type: {type(raw)}")
+              print(f"DEBUG: Received raw data from Jetson, type: {type(raw)}")
+              print(raw)
             try:
                 msg = json.loads(raw)
                 if msg.get("type") == "event":
@@ -324,27 +325,60 @@ def api_start():
     cam_index    = data.get("cam_index", 0)
     jpeg_quality = data.get("jpeg_quality", 70)
 
-    if source_type == "client_camera":
-        _relay_thread = threading.Thread(
-            target=_camera_relay_worker,
-            args=(ws_url, _relay_stop, cam_index, jpeg_quality),
-            daemon=True,
-        )
-    else:
-        _relay_thread = threading.Thread(
-            target=_relay_worker,
-            args=(ws_url, _relay_stop),
-            daemon=True,
-        )
+    # if source_type == "client_camera":
+    #     _relay_thread = threading.Thread(
+    #         target=_camera_relay_worker,
+    #         args=(ws_url, _relay_stop, cam_index, jpeg_quality),
+    #         daemon=True,
+    #     )
+    # else:
+    #     _relay_thread = threading.Thread(
+    #         target=_relay_worker,
+    #         args=(ws_url, _relay_stop),
+    #         daemon=True,
+    #     )
 
-    _relay_thread.start()
-    return jsonify(r.json())
+    # _relay_thread.start()
+    #### Use eventlet.spawn instead of threading.Thread
+    if source_type == "client_camera":
+      import eventlet
+      _relay_thread = eventlet.spawn(
+          _camera_relay_worker,
+          ws_url, _relay_stop, cam_index, jpeg_quality
+    )
+    else:
+      import eventlet
+      _relay_thread = eventlet.spawn(
+          _relay_worker,
+          ws_url, _relay_stop
+      )
+      return jsonify(r.json())
 
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
-    global _relay_stop
+    global _relay_stop, _relay_thread
     _relay_stop.set()
+    # try:
+    #     r = jetson_post("/session/stop")
+    #     return jsonify(r.json())
+    # except Exception as e:
+    #     return jsonify({"error": str(e)}), 500
+    if _relay_thread:
+        try:
+            # Kiểm tra nếu là Greenlet (được tạo bởi eventlet.spawn)
+            if hasattr(_relay_thread, 'kill'):
+                print("DEBUG: Killing Eventlet Greenlet...")
+                _relay_thread.kill()
+            else:
+                # Trường hợp dự phòng nếu vẫn là Thread cũ
+                _relay_thread.join(timeout=1.0)
+        except Exception as e:
+            print(f"DEBUG: Error while killing thread/greenlet: {e}")
+        finally:
+            _relay_thread = None
+
+    # 3. Thông báo cho Jetson Server dừng session AI
     try:
         r = jetson_post("/session/stop")
         return jsonify(r.json())
