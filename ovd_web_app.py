@@ -352,7 +352,7 @@ def api_start():
           _relay_worker,
           ws_url, _relay_stop
       )
-      return jsonify(r.json())
+    return jsonify(r.json())
 
 
 @app.route("/api/stop", methods=["POST"])
