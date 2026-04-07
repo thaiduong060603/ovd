@@ -6,7 +6,7 @@ Architecture:
     Browser ←→ Flask Web App (this file) ←→ Jetson Server (jetson_server.py)
 
 Install:
-    pip install flask flask-socketio requests websockets pyyaml opencv-python
+    pip install flask flask-socketio requests websockets websocket-client pyyaml opencv-python
 
 Run:
     python ovd_web_app.py
@@ -54,8 +54,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet",
                     max_http_buffer_size=10 * 1024 * 1024)
 
 # Internal relay state
-_relay_stop   = threading.Event()
-_relay_thread = None
+_relay_stop        = threading.Event()
+_relay_thread      = None
+_cam_frame_queue: queue.Queue = queue.Queue(maxsize=8)   # module-level, tránh re-register handler
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,155 +75,185 @@ def jetson_post(path, **kwargs):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _relay_worker(ws_url: str, stop_flag: threading.Event):
-    """Background thread: connects to Jetson WS and relays frames/events to browser via SocketIO."""
-    reconnect_delay = 2.0
+    """
+    Video-file / Jetson-camera relay dùng eventlet (không asyncio).
+    Kết nối WS tới Jetson, relay frame/event về browser qua socketio.emit().
+    Chạy trong eventlet greenthread → socketio.emit() hoạt động đúng.
+    """
+    import eventlet
+    import websocket as ws_client  # websocket-client (sync, eventlet-compatible)
 
-    async def _run():
-        nonlocal reconnect_delay
-        while not stop_flag.is_set():
+    def _parse_and_emit(raw):
+        if isinstance(raw, str):
             try:
-                async with websockets.connect(
-                    ws_url,
-                    max_size=20 * 1024 * 1024,
-                    ping_interval=20,
-                ) as ws:
-                    reconnect_delay = 2.0
-                    async for raw in ws:
-                        if stop_flag.is_set():
-                            break
-                        if isinstance(raw, bytes):
-                            if raw.startswith(b"FRAME"):
-                                idx = raw.find(b"__META__")
-                                if idx == -1:
-                                    continue
-                                jpeg_bytes = raw[5:idx]
-                                meta_bytes = raw[idx + 8:]
-                                try:
-                                    meta = json.loads(meta_bytes.decode("utf-8"))
-                                except Exception:
-                                    meta = {}
-                                # Encode JPEG as base64 for browser
-                                b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                                socketio.emit("frame", {"jpeg": b64, "meta": meta})
-
-                            elif raw.startswith(b"EVIDENCE"):
-                                idx = raw.find(b"__META__")
-                                if idx == -1:
-                                    continue
-                                jpeg_bytes = raw[8:idx]
-                                meta_bytes = raw[idx + 8:]
-                                try:
-                                    ev_meta = json.loads(meta_bytes.decode("utf-8"))
-                                except Exception:
-                                    ev_meta = {}
-                                b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                                socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
-
-                        elif isinstance(raw, str):
-                            try:
-                                msg = json.loads(raw)
-                                if msg.get("type") == "event":
-                                    socketio.emit("alert_event", msg.get("payload", {}))
-                                elif msg.get("type") == "status":
-                                    socketio.emit("status_update", msg.get("payload", {}))
-                            except Exception:
-                                pass
-            except (ConnectionRefusedError, OSError):
-                pass
+                msg = json.loads(raw)
+                if msg.get("type") == "event":
+                    socketio.emit("alert_event", msg.get("payload", {}))
+                elif msg.get("type") == "status":
+                    socketio.emit("status_update", msg.get("payload", {}))
             except Exception:
                 pass
+            return
+        if not isinstance(raw, bytes):
+            return
+        if raw.startswith(b"FRAME"):
+            idx = raw.find(b"__META__")
+            if idx == -1:
+                return
+            jpeg_bytes = raw[5:idx]
+            try:
+                meta = json.loads(raw[idx + 8:].decode("utf-8"))
+            except Exception:
+                meta = {}
+            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+            socketio.emit("frame", {"jpeg": b64, "meta": meta})
+        elif raw.startswith(b"EVIDENCE"):
+            idx = raw.find(b"__META__")
+            if idx == -1:
+                return
+            jpeg_bytes = raw[8:idx]
+            try:
+                ev_meta = json.loads(raw[idx + 8:].decode("utf-8"))
+            except Exception:
+                ev_meta = {}
+            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+            socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
 
-            if not stop_flag.is_set():
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 1.5, 15.0)
+    reconnect_delay = 2.0
+    while not stop_flag.is_set():
+        try:
+            ws = ws_client.create_connection(
+                ws_url,
+                timeout=10,
+                max_size=20 * 1024 * 1024,
+            )
+            reconnect_delay = 2.0
+            while not stop_flag.is_set():
+                try:
+                    raw = ws.recv()
+                    if raw:
+                        _parse_and_emit(raw)
+                except Exception:
+                    break
+            ws.close()
+        except (ConnectionRefusedError, OSError):
+            pass
+        except Exception:
+            pass
 
-    asyncio.run(_run())
+        if not stop_flag.is_set():
+            eventlet.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 1.5, 15.0)
 
 
 def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int = 0, jpeg_quality: int = 70):
     """
-    Browser-camera relay: browser sends JPEG frames via SocketIO 'camera_frame' event.
-    This thread opens a persistent WebSocket to Jetson, forwards those frames,
-    and relays annotated results back to the browser via SocketIO.
-    NOTE: cv2.VideoCapture is NOT used — the camera lives in the browser/laptop.
-    """
-    _cam_frame_queue: queue.Queue = queue.Queue(maxsize=4)
+    Browser-camera relay sử dụng eventlet (không dùng asyncio).
 
-    @socketio.on("camera_frame")
-    def _on_camera_frame(data):
-        """Browser sends: {'jpeg_b64': '<base64 string>'}"""
+    Flow:
+        Browser --[SocketIO camera_frame]--> _cam_frame_queue (module-level)
+             --> greenthread send_loop  --> Jetson WebSocket
+        Jetson --> greenthread recv_loop --> socketio.emit("frame") --> Browser
+
+    Lý do dùng eventlet thay asyncio:
+        socketio.emit() từ asyncio thread (OS thread khác) bị drop silently
+        khi async_mode="eventlet". Eventlet greenthread tương thích hoàn toàn.
+    """
+    import eventlet
+    from eventlet.green import socket as green_socket
+
+    # Xóa queue cũ trước khi bắt đầu session mới
+    while not _cam_frame_queue.empty():
         try:
-            jpeg_bytes = base64.b64decode(data.get("jpeg_b64", ""))
-            if not _cam_frame_queue.full():
-                _cam_frame_queue.put_nowait(jpeg_bytes)
+            _cam_frame_queue.get_nowait()
+        except Exception:
+            break
+
+    def _parse_and_emit(raw):
+        """Parse binary message từ Jetson và emit lên browser."""
+        if not isinstance(raw, bytes):
+            # Text message
+            try:
+                msg = json.loads(raw)
+                if msg.get("type") == "event":
+                    socketio.emit("alert_event", msg.get("payload", {}))
+                elif msg.get("type") == "status":
+                    socketio.emit("status_update", msg.get("payload", {}))
+            except Exception:
+                pass
+            return
+
+        if raw.startswith(b"FRAME"):
+            idx = raw.find(b"__META__")
+            if idx == -1:
+                return
+            jpeg_bytes = raw[5:idx]
+            try:
+                meta = json.loads(raw[idx + 8:].decode("utf-8"))
+            except Exception:
+                meta = {}
+            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+            socketio.emit("frame", {"jpeg": b64, "meta": meta})
+
+        elif raw.startswith(b"EVIDENCE"):
+            idx = raw.find(b"__META__")
+            if idx == -1:
+                return
+            jpeg_bytes = raw[8:idx]
+            try:
+                ev_meta = json.loads(raw[idx + 8:].decode("utf-8"))
+            except Exception:
+                ev_meta = {}
+            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+            socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
+
+    while not stop_flag.is_set():
+        try:
+            # Kết nối WebSocket tới Jetson dùng websocket-client (sync, eventlet-compatible)
+            import websocket as ws_client  # websocket-client, không phải websockets
+
+            ws = ws_client.create_connection(
+                ws_url,
+                timeout=10,
+                max_size=20 * 1024 * 1024,
+            )
+
+            def send_loop():
+                """Lấy frame từ queue và gửi lên Jetson."""
+                while not stop_flag.is_set():
+                    try:
+                        jpeg_bytes = _cam_frame_queue.get(timeout=1.0)
+                        ws.send_binary(jpeg_bytes)
+                    except queue.Empty:
+                        pass
+                    except Exception:
+                        break
+
+            def recv_loop():
+                """Nhận kết quả annotated từ Jetson và emit về browser."""
+                while not stop_flag.is_set():
+                    try:
+                        raw = ws.recv()
+                        if raw:
+                            _parse_and_emit(raw)
+                    except Exception:
+                        break
+
+            # Chạy send và recv song song trong eventlet greenthreads
+            g_send = eventlet.spawn(send_loop)
+            g_recv = eventlet.spawn(recv_loop)
+            # Chờ recv_loop kết thúc (khi Jetson ngắt kết nối)
+            g_recv.wait()
+            g_send.kill()
+            ws.close()
+
+        except (ConnectionRefusedError, OSError):
+            pass
         except Exception:
             pass
 
-    async def _run():
-        while not stop_flag.is_set():
-            try:
-                async with websockets.connect(
-                    ws_url, max_size=20 * 1024 * 1024, ping_interval=20
-                ) as ws:
-
-                    async def send_frames():
-                        while not stop_flag.is_set():
-                            try:
-                                jpeg_bytes = await asyncio.get_event_loop().run_in_executor(
-                                    None, lambda: _cam_frame_queue.get(timeout=1.0)
-                                )
-                                await ws.send(jpeg_bytes)
-                            except queue.Empty:
-                                pass
-
-                    async def recv_results():
-                        async for raw in ws:
-                            if stop_flag.is_set():
-                                break
-                            if isinstance(raw, bytes):
-                                if raw.startswith(b"FRAME"):
-                                    idx = raw.find(b"__META__")
-                                    if idx == -1:
-                                        continue
-                                    jpeg_bytes = raw[5:idx]
-                                    meta_bytes = raw[idx + 8:]
-                                    try:
-                                        meta = json.loads(meta_bytes.decode("utf-8"))
-                                    except Exception:
-                                        meta = {}
-                                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                                    socketio.emit("frame", {"jpeg": b64, "meta": meta})
-                                elif raw.startswith(b"EVIDENCE"):
-                                    idx = raw.find(b"__META__")
-                                    if idx == -1:
-                                        continue
-                                    jpeg_bytes = raw[8:idx]
-                                    meta_bytes = raw[idx + 8:]
-                                    try:
-                                        ev_meta = json.loads(meta_bytes.decode("utf-8"))
-                                    except Exception:
-                                        ev_meta = {}
-                                    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-                                    socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
-                            elif isinstance(raw, str):
-                                try:
-                                    msg = json.loads(raw)
-                                    if msg.get("type") == "event":
-                                        socketio.emit("alert_event", msg.get("payload", {}))
-                                except Exception:
-                                    pass
-
-                    await asyncio.gather(send_frames(), recv_results())
-
-            except (ConnectionRefusedError, OSError):
-                pass
-            except Exception:
-                pass
-
-            if not stop_flag.is_set():
-                await asyncio.sleep(2.0)
-
-    asyncio.run(_run())
+        if not stop_flag.is_set():
+            eventlet.sleep(2.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -341,6 +372,20 @@ def on_connect():
 @socketio.on("ping_server")
 def on_ping():
     emit("pong_server", {"time": time.time()})
+
+
+@socketio.on("camera_frame")
+def on_camera_frame(data):
+    """Browser gửi JPEG frame: {'jpeg_b64': '<base64>'}
+    Đặt vào queue để _camera_relay_worker forward lên Jetson.
+    Handler này chạy trong eventlet greenthread → thread-safe với socketio.
+    """
+    try:
+        jpeg_bytes = base64.b64decode(data.get("jpeg_b64", ""))
+        if not _cam_frame_queue.full():
+            _cam_frame_queue.put_nowait(jpeg_bytes)
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
