@@ -604,6 +604,8 @@ def _pipeline_worker():
             if session.frame_queue.full():
                 try:
                     session.frame_queue.get_nowait()
+                    print(f"[SERVER] Pushed frame {session.frame_id} to queue (size={session.frame_queue.qsize()})")
+
                 except queue.Empty:
                     pass
             try:

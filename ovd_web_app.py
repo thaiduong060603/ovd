@@ -160,7 +160,8 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
         khi async_mode="eventlet". Eventlet greenthread tương thích hoàn toàn.
     """
     import eventlet
-    from eventlet.green import socket as green_socket
+    from eventlet.queue import Empty 
+    global _cam_frame_queue
 
     # Xóa queue cũ trước khi bắt đầu session mới
     while not _cam_frame_queue.empty():
@@ -226,21 +227,25 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
                 """Lấy frame từ queue và gửi lên Jetson."""
                 while not stop_flag.is_set():
                     try:
+                        eventlet.sleep(0)
                         jpeg_bytes = _cam_frame_queue.get(timeout=1.0)
                         ws.send_binary(jpeg_bytes)
-                    except queue.Empty:
+                    except Empty:
                         pass
-                    except Exception:
+                    except Exception as e:
+                        print(f"DEBUG: Send loop error: {e}")
                         break
 
             def recv_loop():
                 """Nhận kết quả annotated từ Jetson và emit về browser."""
                 while not stop_flag.is_set():
                     try:
+                        eventlet.sleep(0)
                         raw = ws.recv()
                         if raw:
                             _parse_and_emit(raw)
-                    except Exception:
+                    except Exception as e:
+                        print(f"DEBUG: Recv loop error: {e}")
                         break
 
             # Chạy send và recv song song trong eventlet greenthreads
