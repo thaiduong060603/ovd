@@ -172,7 +172,7 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
     def _parse_and_emit(raw):
         """Parse binary message từ Jetson và emit lên browser."""
         if not isinstance(raw, bytes):
-            # Text message
+            print(f"DEBUG: Received raw data from Jetson, type: {type(raw)}")
             try:
                 msg = json.loads(raw)
                 if msg.get("type") == "event":
@@ -206,6 +206,9 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
                 ev_meta = {}
             b64 = base64.b64encode(jpeg_bytes).decode("ascii")
             socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
+        elif len(raw) > 1000: # Giả định là một tấm ảnh
+          b64 = base64.b64encode(raw).decode("ascii")
+          socketio.emit("frame", {"jpeg": b64, "meta": {}})            
 
     while not stop_flag.is_set():
         try:
@@ -908,6 +911,7 @@ socket.on('disconnect', () => log('WebSocket disconnected', 'warn'));
 socket.on('log', d => log(d.msg, d.level || 'info'));
 
 socket.on('frame', d => {
+  console.log("Received frame from server!"); // Thêm dòng này để test
   showFrame(d.jpeg, d.meta);
 });
 
