@@ -174,15 +174,15 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
         if not isinstance(raw, bytes):
               print(f"DEBUG: Received raw data from Jetson, type: {type(raw)}")
               print(raw)
-            try:
-                msg = json.loads(raw)
-                if msg.get("type") == "event":
-                    socketio.emit("alert_event", msg.get("payload", {}))
-                elif msg.get("type") == "status":
-                    socketio.emit("status_update", msg.get("payload", {}))
-            except Exception:
-                pass
-            return
+              try:
+                  msg = json.loads(raw)
+                  if msg.get("type") == "event":
+                      socketio.emit("alert_event", msg.get("payload", {}))
+                  elif msg.get("type") == "status":
+                      socketio.emit("status_update", msg.get("payload", {}))
+              except Exception:
+                  pass
+              return
 
         if raw.startswith(b"FRAME"):
             idx = raw.find(b"__META__")
