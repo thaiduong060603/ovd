@@ -124,7 +124,9 @@ def _relay_worker(ws_url: str, stop_flag: threading.Event):
         try:
             ws = ws_client.create_connection(
                 ws_url,
-                timeout=10,
+                timeout=30,             # Tăng lên 30 giây để tránh bị drop khi mạng lag
+                ping_interval=10,       # Thêm ping để giữ kết nối sống (Keep-alive)
+                ping_timeout=5,
                 max_size=20 * 1024 * 1024,
             )
             reconnect_delay = 2.0
@@ -244,6 +246,9 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
                         raw = ws.recv()
                         if raw:
                             _parse_and_emit(raw)
+                    except ws_client.WebSocketTimeoutException:
+                      # Nếu chỉ là timeout tạm thời, hãy continue thay vì break để giữ socket
+                      continue
                     except Exception as e:
                         print(f"DEBUG: Recv loop error: {e}")
                         break
