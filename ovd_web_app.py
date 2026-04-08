@@ -74,70 +74,85 @@ def jetson_post(path, **kwargs):
 # WebSocket relay: Jetson → SocketIO → Browser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _parse_and_emit(raw):
+    """Parse binary/text message từ Jetson và emit lên browser qua SocketIO."""
+    if isinstance(raw, str):
+        try:
+            msg = json.loads(raw)
+            if msg.get("type") == "event":
+                socketio.emit("alert_event", msg.get("payload", {}))
+            elif msg.get("type") == "status":
+                socketio.emit("status_update", msg.get("payload", {}))
+        except Exception:
+            pass
+        return
+    if not isinstance(raw, bytes):
+        return
+    if raw.startswith(b"FRAME"):
+        idx = raw.find(b"__META__")
+        if idx == -1:
+            return
+        jpeg_bytes = raw[5:idx]
+        try:
+            meta = json.loads(raw[idx + 8:].decode("utf-8"))
+        except Exception:
+            meta = {}
+        b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+        socketio.emit("frame", {"jpeg": b64, "meta": meta})
+    elif raw.startswith(b"EVIDENCE"):
+        idx = raw.find(b"__META__")
+        if idx == -1:
+            return
+        jpeg_bytes = raw[8:idx]
+        try:
+            ev_meta = json.loads(raw[idx + 8:].decode("utf-8"))
+        except Exception:
+            ev_meta = {}
+        b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+        socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
+
+
 def _relay_worker(ws_url: str, stop_flag: threading.Event):
     """
-    Video-file / Jetson-camera relay dùng eventlet (không asyncio).
-    Kết nối WS tới Jetson, relay frame/event về browser qua socketio.emit().
-    Chạy trong eventlet greenthread → socketio.emit() hoạt động đúng.
+    Video-file / Jetson-camera relay dùng eventlet greenthread.
+
+    FIX: ws.recv() của websocket-client là blocking call, KHÔNG yield cho
+    eventlet → greenthread chiếm CPU, SocketIO không xử lý được WebSocket
+    handshake từ browser → browser thấy 'WebSocket closed before established'.
+
+    Giải pháp: set timeout ngắn (0.05s) + catch WebSocketTimeoutException để
+    yield eventlet sau mỗi lần recv miss, giữ cho event loop sống.
     """
     import eventlet
-    import websocket as ws_client  # websocket-client (sync, eventlet-compatible)
-
-    def _parse_and_emit(raw):
-        if isinstance(raw, str):
-            try:
-                msg = json.loads(raw)
-                if msg.get("type") == "event":
-                    socketio.emit("alert_event", msg.get("payload", {}))
-                elif msg.get("type") == "status":
-                    socketio.emit("status_update", msg.get("payload", {}))
-            except Exception:
-                pass
-            return
-        if not isinstance(raw, bytes):
-            return
-        if raw.startswith(b"FRAME"):
-            idx = raw.find(b"__META__")
-            if idx == -1:
-                return
-            jpeg_bytes = raw[5:idx]
-            try:
-                meta = json.loads(raw[idx + 8:].decode("utf-8"))
-            except Exception:
-                meta = {}
-            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-            socketio.emit("frame", {"jpeg": b64, "meta": meta})
-        elif raw.startswith(b"EVIDENCE"):
-            idx = raw.find(b"__META__")
-            if idx == -1:
-                return
-            jpeg_bytes = raw[8:idx]
-            try:
-                ev_meta = json.loads(raw[idx + 8:].decode("utf-8"))
-            except Exception:
-                ev_meta = {}
-            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-            socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
+    import websocket as ws_client
 
     reconnect_delay = 2.0
     while not stop_flag.is_set():
         try:
             ws = ws_client.create_connection(
                 ws_url,
-                timeout=30,             # Tăng lên 30 giây để tránh bị drop khi mạng lag
-                ping_interval=10,       # Thêm ping để giữ kết nối sống (Keep-alive)
-                ping_timeout=5,
+                timeout=5,                     # timeout ngắn để recv không block mãi
                 max_size=20 * 1024 * 1024,
+                # ping_interval/ping_timeout KHÔNG dùng ở đây vì create_connection
+                # không hỗ trợ — chỉ WebSocketApp mới có. Tránh silently ignored.
             )
+            ws.settimeout(0.05)               # non-blocking recv: yield sau 50ms nếu không có frame
             reconnect_delay = 2.0
             while not stop_flag.is_set():
                 try:
                     raw = ws.recv()
                     if raw:
                         _parse_and_emit(raw)
+                except ws_client.WebSocketTimeoutException:
+                    # Không có frame trong 50ms → yield cho eventlet rồi tiếp tục
+                    eventlet.sleep(0)
+                    continue
                 except Exception:
                     break
-            ws.close()
+            try:
+                ws.close()
+            except Exception:
+                pass
         except (ConnectionRefusedError, OSError):
             pass
         except Exception:
@@ -172,47 +187,8 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
         except Exception:
             break
 
-    def _parse_and_emit(raw):
-        """Parse binary message từ Jetson và emit lên browser."""
-        if not isinstance(raw, bytes):
-              print(f"DEBUG: Received raw data from Jetson, type: {type(raw)}")
-              print(raw)
-              try:
-                  msg = json.loads(raw)
-                  if msg.get("type") == "event":
-                      socketio.emit("alert_event", msg.get("payload", {}))
-                  elif msg.get("type") == "status":
-                      socketio.emit("status_update", msg.get("payload", {}))
-              except Exception:
-                  pass
-              return
-
-        if raw.startswith(b"FRAME"):
-            idx = raw.find(b"__META__")
-            if idx == -1:
-                return
-            jpeg_bytes = raw[5:idx]
-            try:
-                meta = json.loads(raw[idx + 8:].decode("utf-8"))
-            except Exception:
-                meta = {}
-            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-            socketio.emit("frame", {"jpeg": b64, "meta": meta})
-
-        elif raw.startswith(b"EVIDENCE"):
-            idx = raw.find(b"__META__")
-            if idx == -1:
-                return
-            jpeg_bytes = raw[8:idx]
-            try:
-                ev_meta = json.loads(raw[idx + 8:].decode("utf-8"))
-            except Exception:
-                ev_meta = {}
-            b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-            socketio.emit("evidence", {"jpeg": b64, "meta": ev_meta})
-        elif len(raw) > 1000: # Giả định là một tấm ảnh
-          b64 = base64.b64encode(raw).decode("ascii")
-          socketio.emit("frame", {"jpeg": b64, "meta": {}})            
+    # Dùng _parse_and_emit() module-level (đã định nghĩa ở trên) thay vì local copy.
+    
 
     while not stop_flag.is_set():
         try:
@@ -221,7 +197,7 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
 
             ws = ws_client.create_connection(
                 ws_url,
-                timeout=10,
+                timeout=5,             # timeout connect ban đầu
                 max_size=20 * 1024 * 1024,
             )
 
@@ -240,15 +216,16 @@ def _camera_relay_worker(ws_url: str, stop_flag: threading.Event, cam_index: int
 
             def recv_loop():
                 """Nhận kết quả annotated từ Jetson và emit về browser."""
+                ws.settimeout(0.05)   # non-blocking: yield eventlet sau 50ms nếu không có frame
                 while not stop_flag.is_set():
                     try:
-                        eventlet.sleep(0)
                         raw = ws.recv()
                         if raw:
                             _parse_and_emit(raw)
                     except ws_client.WebSocketTimeoutException:
-                      # Nếu chỉ là timeout tạm thời, hãy continue thay vì break để giữ socket
-                      continue
+                        # Không có frame trong 50ms → yield cho eventlet
+                        eventlet.sleep(0)
+                        continue
                     except Exception as e:
                         print(f"DEBUG: Recv loop error: {e}")
                         break
@@ -319,9 +296,17 @@ def api_start():
     source_type = data.get("source_type", "video_file")
 
     # Stop any existing relay
+    # FIX: _relay_thread là Greenlet (eventlet.spawn), không phải threading.Thread.
+    # Greenlet không có is_alive()/join() → dùng .kill() + dead property thay thế.
     _relay_stop.set()
-    if _relay_thread and _relay_thread.is_alive():
-        _relay_thread.join(timeout=3.0)
+    if _relay_thread is not None:
+        try:
+            if hasattr(_relay_thread, 'kill'):   # Greenlet
+                _relay_thread.kill()
+            elif hasattr(_relay_thread, 'join'):  # Thread (fallback)
+                _relay_thread.join(timeout=3.0)
+        except Exception:
+            pass
     _relay_stop = threading.Event()
 
     try:
