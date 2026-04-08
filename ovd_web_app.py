@@ -948,7 +948,15 @@ roi:
 
 <script>
 // ── SOCKET.IO ──────────────────────────────────────────────────────────
-const socket = io({ transports: ['websocket', 'polling'] });
+// Luôn kết nối về đúng host hiện tại, tránh wss/ws mismatch
+const _proto = location.protocol === 'https:' ? 'https:' : 'http:';
+const _ioUrl  = _proto + '//' + location.host;
+const socket = io(_ioUrl, {
+  transports: ['websocket', 'polling'],
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  timeout: 20000,
+});
 
 socket.on('connect', () => log('WebSocket connected to web server', 'success'));
 socket.on('disconnect', () => log('WebSocket disconnected', 'warn'));
@@ -1575,24 +1583,27 @@ def main():
     print("=" * 62)
 
     if use_ssl:
-        import eventlet
-        import eventlet.wsgi
-        print(f" [!] Starting HTTPS on port {args.port} ...")
-        sock = eventlet.listen((args.host, args.port))
-        secure_sock = eventlet.wrap_ssl(
-            sock,
+        print(f" [!] Starting HTTPS (SSL) on port {args.port} ...")
+        # Dùng socketio.run() với certfile/keyfile thay vì eventlet.wsgi.server
+        # để SocketIO hoạt động đúng với SSL (wss://) 
+        socketio.run(
+            app,
+            host=args.host,
+            port=args.port,
+            debug=args.debug,
             certfile=CERT_FILE,
             keyfile=KEY_FILE,
-            server_side=True,
+            allow_unsafe_werkzeug=True,
         )
-        eventlet.wsgi.server(secure_sock, app)
     else:
         print(f" [!] Starting HTTP on port {args.port} ...")
-        socketio.run(app,
-                     host=args.host,
-                     port=args.port,
-                     debug=args.debug,
-                     allow_unsafe_werkzeug=True)
+        socketio.run(
+            app,
+            host=args.host,
+            port=args.port,
+            debug=args.debug,
+            allow_unsafe_werkzeug=True,
+        )
 
 
 if __name__ == "__main__":
