@@ -1077,45 +1077,49 @@ const videoCanvas = document.getElementById('videoCanvas');
 const roiCanvas   = document.getElementById('roiCanvas');
 const vCtx = videoCanvas.getContext('2d');
 const rCtx = roiCanvas.getContext('2d');
-const img  = new Image();
 
-img.onload = function() {
-  const area = document.getElementById('videoArea');
-  canvasW = area.clientWidth;
-  canvasH = area.clientHeight;
-
-  videoCanvas.width  = canvasW;
-  videoCanvas.height = canvasH;
-  roiCanvas.width    = canvasW;
-  roiCanvas.height   = canvasH;
-
-  frameW = img.width;
-  frameH = img.height;
-
-  canvasScale = Math.min(canvasW / frameW, canvasH / frameH);
-  const nw = frameW * canvasScale;
-  const nh = frameH * canvasScale;
-  canvasOffX = (canvasW - nw) / 2;
-  canvasOffY = (canvasH - nh) / 2;
-
-  vCtx.clearRect(0, 0, canvasW, canvasH);
-  vCtx.fillStyle = '#05080d';
-  vCtx.fillRect(0, 0, canvasW, canvasH);
-  vCtx.drawImage(img, canvasOffX, canvasOffY, nw, nh);
-
-  // Draw track bboxes and ROI from meta stored on img
-  if (img._meta) drawAnnotations(img._meta);
-  drawRoiOverlay();
-};
-
-function showFrame(jpeg, meta) {
+async function showFrame(jpeg, meta) {
   document.getElementById('videoPlaceholder').style.display = 'none';
   videoCanvas.style.display = 'block';
   roiCanvas.style.display   = 'block';
   document.getElementById('videoHud').style.display = 'block';
   updateHud(meta);
-  img._meta = meta;
-  img.src   = 'data:image/jpeg;base64,' + jpeg;
+
+  try {
+    // Decode base64 → Blob → ImageBitmap (always fresh, no browser cache)
+    const binary = atob(jpeg);
+    const bytes  = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob   = new Blob([bytes], { type: 'image/jpeg' });
+    const bitmap = await createImageBitmap(blob);
+
+    const area = document.getElementById('videoArea');
+    canvasW = area.clientWidth;
+    canvasH = area.clientHeight;
+    videoCanvas.width  = canvasW;
+    videoCanvas.height = canvasH;
+    roiCanvas.width    = canvasW;
+    roiCanvas.height   = canvasH;
+
+    frameW = bitmap.width;
+    frameH = bitmap.height;
+    canvasScale = Math.min(canvasW / frameW, canvasH / frameH);
+    const nw = frameW * canvasScale;
+    const nh = frameH * canvasScale;
+    canvasOffX = (canvasW - nw) / 2;
+    canvasOffY = (canvasH - nh) / 2;
+
+    vCtx.clearRect(0, 0, canvasW, canvasH);
+    vCtx.fillStyle = '#05080d';
+    vCtx.fillRect(0, 0, canvasW, canvasH);
+    vCtx.drawImage(bitmap, canvasOffX, canvasOffY, nw, nh);
+    bitmap.close();  // free GPU memory
+
+    if (meta) drawAnnotations(meta);
+    drawRoiOverlay();
+  } catch(e) {
+    console.error('showFrame error:', e);
+  }
 }
 
 function drawAnnotations(meta) {
