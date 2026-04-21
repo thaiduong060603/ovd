@@ -1343,6 +1343,19 @@ async function generateRule() {
     if (checks.length) {
       log(`Attribute checks: ${checks.map(c=>`${c.class_name}[${c.attribute}=${c.value}]`).join(', ')}`, 'info');
     }
+
+    // Auto-sync MONITORING TASK radio based on LLM-detected rule_type
+    const taskMap = {
+      'roi_entry':        '1',
+      'dwell_time':       '2',
+      'helmet_safety':    '3',
+      'proximity_danger': '4',
+    };
+    const taskVal = taskMap[result.rule_type];
+    if (taskVal) {
+      const radio = document.querySelector(`input[name="task"][value="${taskVal}"]`);
+      if (radio) { radio.checked = true; onTaskChange(radio); }
+    }
   } catch(e) {
     log(`Generate error: ${e}`, 'error');
   } finally {
