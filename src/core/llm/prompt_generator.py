@@ -80,6 +80,9 @@ class GeneratedRule:
         lines += [
             "actions:",
             f"  cooldown_seconds: {self.cooldown_seconds}",
+            "  record_pre_seconds: 5.0",
+            "  record_post_seconds: 5.0",
+            "  notify_channels: []",
             "roi:",
             f"  enabled: {'true' if self.roi_enabled else 'false'}",
             "  type: polygon",
