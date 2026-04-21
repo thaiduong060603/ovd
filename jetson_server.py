@@ -74,6 +74,7 @@ class Session:
         self.stream_width: int  = 640
         self.jpeg_quality: int  = 75
         self.stream_skip: int = 2
+        self.attribute_checks: list = []             # from LLM GeneratedRule
 
         # Pipeline internals
         self.stop_event    = threading.Event()
@@ -126,14 +127,15 @@ session = Session()
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StartRequest(BaseModel):
-    source_type:   str  = "video_file"     # video_file | client_camera | jetson_file
-    jetson_file_path: Optional[str] = None  # only for jetson_file
-    rule_yaml:     str  = ""               # raw YAML string
-    detector:      str  = "yolo_world"
-    device:        str  = "cuda"
-    det_interval:  int  = 5
-    stream_width:  int  = 640
-    jpeg_quality:  int  = 75
+    source_type:      str           = "video_file"  # video_file | client_camera | jetson_file
+    jetson_file_path: Optional[str] = None          # only for jetson_file
+    rule_yaml:        str           = ""            # raw YAML string
+    detector:         str           = "yolo_world"  # yolo_world | grounding_dino | nanoowl
+    device:           str           = "cuda"
+    det_interval:     int           = 5
+    stream_width:     int           = 640
+    jpeg_quality:     int           = 75
+    attribute_checks: list          = []            # from LLM — color/attribute filters
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -172,6 +174,38 @@ def get_events(since_index: int = 0):
         "events": session.all_events[since_index:],
         "total":  len(session.all_events),
     })
+
+
+class LLMGenerateRequest(BaseModel):
+    user_input:     str  = ""
+    backend:        str  = "auto"       # auto | ollama | gemini | fallback
+    model_name:     str  = "gemma3:4b"
+    ollama_url:     str  = "http://localhost:11434"
+    gemini_api_key: str  = ""
+
+
+@app.post("/session/llm/generate")
+def llm_generate(req: LLMGenerateRequest):
+    """
+    Convert a multilingual monitoring instruction into structured rule + prompts.
+    Returns GeneratedRule.to_dict() including rule_yaml ready for /session/start.
+    """
+    if not req.user_input.strip():
+        raise HTTPException(400, "user_input is required.")
+    try:
+        from src.core.llm.prompt_generator import PromptGenerator
+        gen  = PromptGenerator(
+            backend        = req.backend,
+            model_name     = req.model_name,
+            ollama_url     = req.ollama_url,
+            gemini_api_key = req.gemini_api_key,
+        )
+        rule = gen.generate(req.user_input)
+        return JSONResponse({"status": "ok", "result": rule.to_dict()})
+    except Exception as e:
+        import traceback
+        print(f"[LLM] Error:\n{traceback.format_exc()}")
+        raise HTTPException(500, str(e))
 
 
 @app.post("/session/upload_video")
@@ -238,18 +272,19 @@ def start_session(req: StartRequest):
         yaml.dump(rule_data, f, default_flow_style=False, allow_unicode=True)
 
     # ── Store config ──────────────────────────────────────────────────────────
-    session.source_type    = req.source_type
-    session.rule_data      = rule_data
-    session.rule_path      = str(tmp_rule)
-    session.detector_name  = req.detector
-    session.device         = req.device
-    session.det_interval   = req.det_interval
-    session.stream_width   = req.stream_width
-    session.jpeg_quality   = req.jpeg_quality
-    session.state          = SessionState.LOADING
-    session.error_msg      = ""
-    session.all_events     = []
-    session.frame_id       = 0
+    session.source_type     = req.source_type
+    session.rule_data       = rule_data
+    session.rule_path       = str(tmp_rule)
+    session.detector_name   = req.detector
+    session.device          = req.device
+    session.det_interval    = req.det_interval
+    session.stream_width    = req.stream_width
+    session.jpeg_quality    = req.jpeg_quality
+    session.attribute_checks = req.attribute_checks or []
+    session.state           = SessionState.LOADING
+    session.error_msg       = ""
+    session.all_events      = []
+    session.frame_id        = 0
 
     # Reset queues
     _clear_queue(session.frame_queue)
@@ -434,21 +469,32 @@ def _pipeline_worker():
         print(f"[PIPELINE] Rule: [{rule.rule_id}] {rule.description}")
 
         # ── Detector ──────────────────────────────────────────────────────────
-        if session.detector_name == "yolo_world":
+        if session.detector_name == "nanoowl":
+            from src.core.detect.nanoowl_detector import NanoOWLDetector
+            detector = NanoOWLDetector(
+                box_threshold  = rule.box_threshold,
+                text_threshold = rule.text_threshold,
+                device         = session.device,
+            )
+        elif session.detector_name == "yolo_world":
             from src.core.detect.yolo_world_detector import YOLOWorldDetector
             detector = YOLOWorldDetector(
-                model_path="models/yolov8s-world.pt",
-                box_threshold=rule.box_threshold,
-                text_threshold=rule.text_threshold,
-                device=session.device,
+                model_path    = "models/yolov8s-world.pt",
+                box_threshold = rule.box_threshold,
+                text_threshold= rule.text_threshold,
+                device        = session.device,
             )
         else:
             from src.core.detect.grounding_dino_detector import GroundingDINODetector
             detector = GroundingDINODetector(
-                box_threshold=rule.box_threshold,
-                text_threshold=rule.text_threshold,
-                device=session.device,
+                box_threshold = rule.box_threshold,
+                text_threshold= rule.text_threshold,
+                device        = session.device,
             )
+
+        # ── Attribute checker ──────────────────────────────────────────────────
+        from src.core.checks.attribute_checker import AttributeChecker
+        attribute_checker = AttributeChecker() if session.attribute_checks else None
 
         # ── Video source (for file-based input) ───────────────────────────────
         video_src = None
@@ -522,8 +568,18 @@ def _pipeline_worker():
             det_input = det_cache if stale < session.det_interval else []
             tracks    = tracker.update(det_input, session.frame_id, timestamp)
 
+            # ── Attribute check filter ────────────────────────────────────────
+            # Filter tracks by visual attributes (e.g. color) before rule eval.
+            # The tracker keeps all tracks; only rule engine sees filtered subset.
+            if attribute_checker and session.attribute_checks:
+                eval_tracks = attribute_checker.filter_tracks(
+                    frame, tracks, session.attribute_checks
+                )
+            else:
+                eval_tracks = tracks
+
             # ── Rule evaluation ───────────────────────────────────────────────
-            engine.evaluate(tracks, session.frame_id, timestamp)
+            engine.evaluate(eval_tracks, session.frame_id, timestamp)
 
             # ── Emit new events ───────────────────────────────────────────────
             new_evts = [e for e in engine.events if e.event_id not in emitted_ids]
@@ -578,6 +634,7 @@ def _pipeline_worker():
             # _, jpeg_buf = cv2.imencode(".jpg", vis, encode_params)
             _, jpeg_buf = cv2.imencode(".jpg", frame, encode_params)
             incident_track_ids = {i.track_id for i in engine.get_confirmed_incidents()}
+            eval_track_ids     = {t.track_id for t in eval_tracks}
 
             meta = {
                 "frame_id":  session.frame_id,
@@ -588,11 +645,12 @@ def _pipeline_worker():
                 "events":    session.total_events,
                 "tracks_data": [
                     {
-                        "track_id": t.track_id,
-                        "bbox": list(map(int, t.bbox)),
+                        "track_id":   t.track_id,
+                        "bbox":       list(map(int, t.bbox)),
                         "class_name": t.class_name,
                         "confidence": float(t.confidence),
-                        "is_incident": t.track_id in incident_track_ids
+                        "is_incident": t.track_id in incident_track_ids,
+                        "attr_pass":   t.track_id in eval_track_ids,
                     } for t in tracks
                 ],
                 "roi_points": rule.roi.points if rule.roi and rule.roi.enabled else []

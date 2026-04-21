@@ -392,6 +392,20 @@ def api_config_update():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/llm/generate", methods=["POST"])
+def api_llm_generate():
+    """Proxy: browser → Flask → Jetson /session/llm/generate."""
+    data = request.get_json(force=True)
+    if not data.get("user_input", "").strip():
+        return jsonify({"error": "user_input is required"}), 400
+    try:
+        r = jetson_post("/session/llm/generate", json=data)
+        r.raise_for_status()
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SocketIO events
 # ─────────────────────────────────────────────────────────────────────────────
@@ -648,6 +662,44 @@ input[type=range] { flex: 1; accent-color: var(--accent); }
         </div>
       </div>
 
+      <!-- MONITORING INTENT (LLM) -->
+      <div class="sidebar-section">
+        <div class="section-header" onclick="toggleSection(this)">
+          <span class="section-title">MONITORING INTENT (AI)</span>
+          <span>▾</span>
+        </div>
+        <div class="section-body">
+          <div class="field">
+            <label>DESCRIBE WHAT TO MONITOR (any language)</label>
+            <textarea id="llmInput" spellcheck="false" placeholder="e.g. Detect workers not wearing yellow helmets&#10;黄色いヘルメットをかぶっていない作業者を検出&#10;Phát hiện công nhân không đội mũ vàng"
+              style="min-height:70px"></textarea>
+          </div>
+          <div class="field-row" style="align-items:center">
+            <div class="field">
+              <label>LLM BACKEND</label>
+              <select id="llmBackend">
+                <option value="auto">Auto-detect</option>
+                <option value="ollama">Ollama (local)</option>
+                <option value="gemini">Gemini API</option>
+                <option value="fallback">Keyword fallback</option>
+              </select>
+            </div>
+            <div class="field" style="max-width:130px">
+              <label>MODEL</label>
+              <input type="text" id="llmModel" value="gemma3:4b" placeholder="gemma3:4b"/>
+            </div>
+          </div>
+          <button class="btn btn-success btn-full" id="btnGenerate" onclick="generateRule()">✦ GENERATE RULE WITH AI</button>
+          <div id="llmResult" style="display:none;margin-top:8px">
+            <div style="font-size:10px;color:var(--muted);letter-spacing:0.08em;margin-bottom:4px">GENERATED PROMPTS</div>
+            <div id="llmPrompts" style="font-size:11px;color:var(--accent);background:var(--surface);border:1px solid var(--border2);border-radius:4px;padding:6px 8px;word-break:break-all"></div>
+            <div style="font-size:10px;color:var(--muted);letter-spacing:0.08em;margin-top:6px;margin-bottom:2px">ATTRIBUTE CHECKS</div>
+            <div id="llmAttrChecks" style="font-size:11px;color:var(--warning);background:var(--surface);border:1px solid var(--border2);border-radius:4px;padding:6px 8px"></div>
+            <div style="font-size:10px;color:var(--muted);margin-top:5px">Rule YAML auto-filled below ↓</div>
+          </div>
+        </div>
+      </div>
+
       <!-- TASK TYPE -->
       <div class="sidebar-section">
         <div class="section-header" onclick="toggleSection(this)">
@@ -807,6 +859,7 @@ roi:
             <div class="field">
               <label>DETECTOR</label>
               <select id="detector">
+                <option value="nanoowl">NanoOWL (TRT)</option>
                 <option value="yolo_world">YOLO-World</option>
                 <option value="grounding_dino">GroundingDINO</option>
               </select>
@@ -969,12 +1022,13 @@ socket.on('status_update', d => {
 });
 
 // ── STATE ──────────────────────────────────────────────────────────────
-let sessionRunning = false;
-let videoUploaded  = false;
-let roiPoints      = [];
+let sessionRunning    = false;
+let videoUploaded     = false;
+let roiPoints         = [];
 let canvasW = 0, canvasH = 0;
 let frameW  = 0, frameH  = 0;
 let canvasOffX = 0, canvasOffY = 0, canvasScale = 1;
+let _llmAttributeChecks = [];   // attribute_checks from last LLM generate
 
 // ── LOG ────────────────────────────────────────────────────────────────
 function log(msg, level='info') {
@@ -1073,10 +1127,15 @@ function drawAnnotations(meta) {
     const sy1 = canvasOffY + y1 * canvasScale;
     const sx2 = canvasOffX + x2 * canvasScale;
     const sy2 = canvasOffY + y2 * canvasScale;
-    vCtx.strokeStyle = t.is_incident ? '#ff3860' : '#00d4ff';
-    vCtx.lineWidth   = t.is_incident ? 3 : 2;
+    // Color: red=incident, cyan=pass, grey=attr_fail (filtered out by rule engine)
+    let color, lw;
+    if (t.is_incident)       { color = '#ff3860'; lw = 3; }
+    else if (t.attr_pass === false) { color = '#555e7a'; lw = 1; }  // filtered by attr check
+    else                     { color = '#00d4ff'; lw = 2; }
+    vCtx.strokeStyle = color;
+    vCtx.lineWidth   = lw;
     vCtx.strokeRect(sx1, sy1, sx2-sx1, sy2-sy1);
-    vCtx.fillStyle = t.is_incident ? '#ff3860' : '#00d4ff';
+    vCtx.fillStyle = color;
     vCtx.font = '10px JetBrains Mono';
     vCtx.fillText(`#${t.track_id} ${t.class_name}`, sx1+2, sy1-4);
   });
@@ -1234,6 +1293,64 @@ function stopCameraCapture() {
   }
 }
 
+// ── LLM RULE GENERATION ───────────────────────────────────────────────
+async function generateRule() {
+  const userInput = document.getElementById('llmInput').value.trim();
+  if (!userInput) { log('Enter a monitoring instruction first', 'warn'); return; }
+
+  const btn = document.getElementById('btnGenerate');
+  btn.disabled = true;
+  btn.textContent = '⟳ GENERATING…';
+  log(`Sending to LLM: "${userInput}"`, 'info');
+
+  const payload = {
+    user_input:  userInput,
+    backend:     document.getElementById('llmBackend').value,
+    model_name:  document.getElementById('llmModel').value,
+  };
+
+  try {
+    const r    = await fetch('/api/llm/generate', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify(payload),
+    });
+    const data = await r.json();
+
+    if (!r.ok) {
+      log(`LLM error: ${data.error || JSON.stringify(data)}`, 'error');
+      return;
+    }
+
+    const result = data.result;
+    // Fill YAML editor
+    document.getElementById('ruleYaml').value = result.rule_yaml || '';
+
+    // Show generated prompts
+    document.getElementById('llmPrompts').textContent =
+      result.prompts ? result.prompts.join('\n') : '—';
+
+    // Show attribute checks
+    const checks = result.attribute_checks || [];
+    _llmAttributeChecks = checks;
+    document.getElementById('llmAttrChecks').textContent =
+      checks.length
+        ? checks.map(c => `${c.class_name}  →  ${c.attribute}: ${c.value}`).join('\n')
+        : 'none';
+
+    document.getElementById('llmResult').style.display = '';
+    log(`Rule generated: type=${result.rule_type}  prompts=${result.prompts?.join(', ')}`, 'success');
+    if (checks.length) {
+      log(`Attribute checks: ${checks.map(c=>`${c.class_name}[${c.attribute}=${c.value}]`).join(', ')}`, 'info');
+    }
+  } catch(e) {
+    log(`Generate error: ${e}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✦ GENERATE RULE WITH AI';
+  }
+}
+
 // ── TASK YAML TEMPLATES ────────────────────────────────────────────────
 const YAML_TEMPLATES = {
   1: `rule_id: rule_roi_entry
@@ -1381,14 +1498,15 @@ async function startSession() {
   }
 
   const payload = {
-    source_type:   srcVal,
-    rule_yaml:     ruleYaml,
-    detector:      document.getElementById('detector').value,
-    device:        document.getElementById('device').value,
-    det_interval:  parseInt(document.getElementById('detInterval').value),
-    stream_width:  parseInt(document.getElementById('streamWidth').value),
-    jpeg_quality:  parseInt(document.getElementById('jpegQuality').value),
-    cam_index:     parseInt(document.getElementById('camIndex')?.value || 0),
+    source_type:      srcVal,
+    rule_yaml:        ruleYaml,
+    detector:         document.getElementById('detector').value,
+    device:           document.getElementById('device').value,
+    det_interval:     parseInt(document.getElementById('detInterval').value),
+    stream_width:     parseInt(document.getElementById('streamWidth').value),
+    jpeg_quality:     parseInt(document.getElementById('jpegQuality').value),
+    cam_index:        parseInt(document.getElementById('camIndex')?.value || 0),
+    attribute_checks: _llmAttributeChecks,
   };
   if (srcVal === 'jetson_file') {
     payload.jetson_file_path = document.getElementById('jetsonFilePath').value.trim();
